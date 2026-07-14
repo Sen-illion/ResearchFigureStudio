@@ -38,7 +38,7 @@ def _connector_type_for_route(route_style: str):
     return MSO_CONNECTOR.STRAIGHT
 
 
-def _set_text(shape, text: str, font_size: int = 10, bold: bool = False, color: str = "#163B4D", align=PP_ALIGN.CENTER) -> None:
+def _set_text(shape, text: str, font_size: float = 10, bold: bool = False, color: str = "#163B4D", align=PP_ALIGN.CENTER, font_family: str | None = None) -> None:
     tf = shape.text_frame
     tf.clear()
     tf.word_wrap = True
@@ -47,8 +47,10 @@ def _set_text(shape, text: str, font_size: int = 10, bold: bool = False, color: 
     p.alignment = align
     run = p.add_run()
     run.text = text
-    run.font.size = Pt(font_size)
+    run.font.size = Pt(float(font_size))
     run.font.bold = bold
+    if font_family:
+        run.font.name = str(font_family)
     run.font.color.rgb = _rgb(color)
 
 
@@ -62,9 +64,9 @@ def _add_round_rect(slide, x: float, y: float, w: float, h: float, fill: str, st
     return shape
 
 
-def _add_label(slide, text: str, x: float, y: float, w: float, h: float, font_size: int = 9, bold: bool = False, align=PP_ALIGN.CENTER):
+def _add_label(slide, text: str, x: float, y: float, w: float, h: float, font_size: float = 9, bold: bool = False, align=PP_ALIGN.CENTER, color: str = "#163B4D", font_family: str | None = None):
     box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
-    _set_text(box, text, font_size=font_size, bold=bold, align=align)
+    _set_text(box, text, font_size=font_size, bold=bold, color=color, align=align, font_family=font_family)
     return box
 
 
@@ -179,6 +181,30 @@ def _add_picture_contain(slide, image_path: Path, x: float, y: float, w: float, 
 
 def _panel_map(program: dict) -> dict[str, dict]:
     return {panel["id"]: panel for panel in program.get("panels", [])}
+
+
+def _text_program_items(program: dict) -> list[dict]:
+    text_program = program.get("text_program")
+    if not isinstance(text_program, dict):
+        return []
+    items = text_program.get("items", [])
+    return [item for item in items if isinstance(item, dict) and item.get("visible", True)]
+
+
+def _text_item_for_target(program: dict, target_id: str, role: str) -> dict | None:
+    for item in _text_program_items(program):
+        if str(item.get("target_id")) == target_id and str(item.get("role")) == role:
+            return item
+    return None
+
+
+def _align_from_text_item(item: dict):
+    value = str(item.get("align") or "").lower()
+    if value == "left":
+        return PP_ALIGN.LEFT
+    if value == "right":
+        return PP_ALIGN.RIGHT
+    return PP_ALIGN.CENTER
 
 
 def _object_map(program: dict) -> dict[str, dict]:
@@ -327,6 +353,12 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
 
     panels_by_id = _panel_map(program)
     panel_shapes = {}
+    has_text_program = bool(_text_program_items(program))
+    ocr_panel_title_targets = {
+        str(item.get("target_id"))
+        for item in _text_program_items(program)
+        if str(item.get("role")) == "panel_title" and "ocr" in str(item.get("reference_binding") or item.get("fit_strategy") or "").lower()
+    }
     for idx, panel in enumerate(program["panels"]):
         x, y, w, h = pct_to_inches(panel["bbox_percent"], width_in, height_in)
         local_style = panel_styles.get(panel["id"], {}) if isinstance(panel_styles.get(panel["id"], {}), dict) else {}
@@ -337,7 +369,15 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
         panel_shapes[panel["id"]] = shape
         header_h = min(0.34, h * 0.17)
         header = _add_round_rect(slide, x, y, w, header_h, header_color, header_color, width_pt=0.8)
-        _set_text(header, panel["title"], font_size=9 if w < 2.0 else 10, bold=True, color="#FFFFFF")
+        title_text_item = _text_item_for_target(program, panel["id"], "panel_title")
+        _set_text(
+            header,
+            "" if str(panel["id"]) in ocr_panel_title_targets else panel["title"],
+            font_size=float(title_text_item.get("font_size_pt")) if title_text_item else (9 if w < 2.0 else 10),
+            bold=True,
+            color=str(title_text_item.get("color_hex")) if title_text_item else "#FFFFFF",
+            font_family=str(title_text_item.get("font_family_guess") or "") if title_text_item else None,
+        )
 
     rendered_arrows = _draw_program_arrows(slide, program, width_in, height_in)
 
@@ -355,7 +395,7 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
                 _left, _top, fit_w, fit_h, fill_percent = _picture_contain_box(asset_path, x, y, w, h)
             else:
                 fill_percent = 0.0
-            if bool(slot.get("show_slot_caption", False)):
+            if bool(slot.get("show_slot_caption", False)) and not has_text_program:
                 parent = panels_by_id.get(slot.get("panel_id"))
                 if parent:
                     px, py, pw, ph = pct_to_inches(parent["bbox_percent"], width_in, height_in)
@@ -387,7 +427,7 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
             _left, _top, fit_w, fit_h, fill_percent = _picture_contain_box(asset_path, x, y, w, h)
         else:
             fill_percent = 0.0
-        if bool(slot.get("show_slot_caption", False)):
+        if bool(slot.get("show_slot_caption", False)) and not has_text_program:
             caption_h = min(0.20, h * 0.18)
             caption = slot.get("display_label") or _short_caption(slot["paper_concept"])
             caption_queue.append((caption, x + w * 0.03, y + h + 0.01, w * 0.94, caption_h, 5 if w < 0.8 else 6, PP_ALIGN.CENTER))
@@ -406,6 +446,50 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
     for caption, x, y, w, h, font_size, align in caption_queue:
         _add_label(slide, caption, x, y, w, h, font_size=font_size, align=align)
 
+    rendered_text_items = []
+    for item in _text_program_items(program):
+        is_ocr_text = "ocr" in str(item.get("reference_binding") or item.get("fit_strategy") or "").lower()
+        if str(item.get("role")) == "panel_title" and not is_ocr_text:
+            rendered_text_items.append({
+                "text_id": item.get("id"),
+                "role": item.get("role"),
+                "target_id": item.get("target_id"),
+                "rendered_as": "panel_header_text",
+                "editable_in": "pptx",
+            })
+            continue
+        bbox = item.get("bbox_percent")
+        if not isinstance(bbox, dict):
+            continue
+        x, y, w, h = pct_to_inches(bbox, width_in, height_in)
+        _add_label(
+            slide,
+            str(item.get("text") or ""),
+            x,
+            y,
+            w,
+            h,
+            font_size=float(item.get("font_size_pt") or 6),
+            bold=bool(item.get("bold")),
+            align=_align_from_text_item(item),
+            color=str(item.get("color_hex") or "#263747"),
+            font_family=str(item.get("font_family_guess") or "") or None,
+        )
+        rendered_text_items.append({
+            "text_id": item.get("id"),
+            "role": item.get("role"),
+            "target_id": item.get("target_id"),
+            "source_reference_text_id": item.get("source_reference_text_id"),
+            "bbox_percent": item.get("bbox_percent"),
+            "font_size_pt": item.get("font_size_pt"),
+            "color_hex": item.get("color_hex"),
+            "font_family_guess": item.get("font_family_guess"),
+            "fit_strategy": item.get("fit_strategy"),
+            "ocr_confidence": item.get("ocr_confidence"),
+            "editable_in": "pptx",
+            "rendered_as": "ppt_textbox",
+        })
+
     # Shared resource bus as editable connectors.
     shared = panels_by_id.get("shared_resource_library")
     if shared:
@@ -423,7 +507,8 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
             down = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(cx), Inches(bus_y), Inches(cx), Inches(sy))
             down.line.color.rgb = _rgb("#1F6F8B")
             down.line.width = Pt(1.0)
-        _add_label(slide, "shared resources", sx + 0.2, bus_y - 0.22, 1.5, 0.18, font_size=7, align=PP_ALIGN.LEFT)
+        if not has_text_program:
+            _add_label(slide, "shared resources", sx + 0.2, bus_y - 0.22, 1.5, 0.18, font_size=7, align=PP_ALIGN.LEFT)
 
     if program.get("show_visible_title"):
         title = program.get("paper_brief", {}).get("title_guess") or "Research System Figure"
@@ -441,5 +526,6 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
         },
         "slots": composition_items,
         "arrows": rendered_arrows,
+        "text": rendered_text_items,
     })
     return pptx_path

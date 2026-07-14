@@ -102,6 +102,11 @@ halo underlays by default. Bundle lane offsets require explicit route opt-in
 and must stay inside `reference_tunnel_percent`; the router must record
 `reference_original_path_percent`, `reference_path_delta_max`, and
 `reference_tunnel_preserved`, and it must not change source-target logic.
+Use `rfs presentations-qa --out <output_dir>` only as an optional QA pass when
+the Presentations plugin is available. Presentations may import/render the PPTX,
+extract layout JSON, and report connector/font/rendering drift, but it must not
+mutate the PPTX, rewrite arrows, regenerate layout, or replace RFS as the
+authoritative compiler for reference-locked connector-heavy figures.
 
 Before execution, read these references in this order:
 
@@ -175,6 +180,15 @@ Execution checklist:
    slot positions. Do not convert exact reference ratios into coarse presets
    like `1:1`, `4:3`, `3:4`, `16:9`, or `9:16`; use precise decimal ratios such
    as `0.538:1.000`.
+   Text size, position, color, and hierarchy are reference-primary too. Do not
+   create a default `publication_scale.json`, do not enforce a fixed
+   `paper_double_column` target width, and do not fail a figure only because a
+   reference-matched label would be small after manuscript scaling. Instead,
+   write `reference_text_geometry.json`, `text_program.json`, and
+   `text_alignment_report.json`. These files must preserve the reference
+   image's text bbox, center, relative font height, color, role, and hierarchy.
+   The paper may adapt terminology, but the PPT text layer must stay editable
+   and must not override the reference layout with a generic typography rule.
 6. Write `slot_visual_spec.json`, `reference_slot_prompt_brief.json`, and
    `slot_prompt_plan.json` before image generation. `slot_visual_spec.json`
    records each slot's reference crop objects, foreground subject, secondary
@@ -224,6 +238,10 @@ Execution checklist:
     Major failures must be fixed or the delivery must stop.
 12. Run `scripts/validate_framework_outputs.py <output_dir>` before final
     delivery when a local output directory exists.
+13. Optionally run `rfs presentations-qa --out <output_dir>` after validation.
+    Treat `autoRouteConnectorPx failed` or similar plugin connector fallback
+    warnings as QA evidence. Do not let the Presentations plugin rebuild the
+    figure or override RFS connector geometry.
 
 Hard workflow order:
 
@@ -231,11 +249,11 @@ Hard workflow order:
 reference_control_candidates.json -> slot_overlay.png/reference_control_overlay.png ->
 reference_controls.json -> arrow_style_profile.json/selected_arrow_routes.json/arrow_quality_report.json ->
 reference_style_profile.json/style sheet ->
-layout_plan.json -> figure_program.json -> slot_visual_spec.json ->
+layout_plan.json -> figure_program.json -> reference_text_geometry.json/text_program.json/text_alignment_report.json -> slot_visual_spec.json ->
 reference_slot_prompt_brief.json -> slot_prompt_plan.json -> image2/Gemini slot prompts -> generated
 assets/asset_quality_report/asset_complexity_report/composition_quality_report/asset_visual_review/contact sheets ->
 editable_composition.pptx -> PDF/PNG export -> visual critic -> critic report ->
-final validation/export`
+final validation/export -> optional presentations QA report`
 
 Image block fill rules:
 
@@ -261,6 +279,9 @@ Forbidden shortcuts:
   the final result.
 - Do not use a browser or canvas screenshot as the primary artifact unless it is
   a rendered composition assembled from generated slot assets.
+- Do not use the Presentations plugin as the primary compiler for image-rich
+  research figures; it is QA-only unless the user explicitly asks for a
+  separate presentation deck workflow.
 - If image2/image generation is unavailable, say so and stop or ask for a
   fallback; do not silently switch to a vector-only workflow.
 
@@ -280,6 +301,9 @@ Required output files for image-rich framework figures:
 - `input_manifest.json`
 - `layout_plan.json`
 - `figure_program.json`
+- `reference_text_geometry.json`
+- `text_program.json`
+- `text_alignment_report.json`
 - `slot_visual_spec.json`
 - `reference_slot_prompt_brief.json`
 - `slot_prompt_plan.json`
@@ -298,10 +322,17 @@ Required output files for image-rich framework figures:
 - `alignment_review.md`
 - `critic_report.md` or `critic_report.json`
 
+Optional Presentations-plugin QA outputs:
+
+- `presentations_plugin_qa_report.json`
+- `presentations_plugin_qa_report.md`
+- `presentations_plugin_qa_workspace/`
+
 Validation must fail if the output uses only a single generated full-diagram
 image, lacks slot assets, lacks prompts, lacks a contact sheet, or records
 semantic cropping as the fitting strategy. Validation must also fail when the
-style sheet, layout plan, figure program, slot visual spec, reference slot
+style sheet, layout plan, figure program, reference text geometry, text program,
+text alignment report, slot visual spec, reference slot
 prompt brief, slot prompt plan, reference geometry, asset quality report, asset
 complexity report, composition quality report, asset visual review, visual
 critic report, critic report, or editable PPTX source is missing.
@@ -310,6 +341,11 @@ below its minimum or `empty_margin_percent` above its maximum.
 Validation must fail when a slot uses a coarse preset ratio, when PPT insertion
 adds an extra white tile, or when an inserted image fills less than 95% of its
 slot area.
+Validation must fail when PPT text is not bound to
+`reference_text_geometry.json`, when text center/bbox/font-ratio drift from the
+reference exceeds the recorded alignment tolerance, or when critical text is
+not editable in PPTX. Validation must not fail only because the text would be
+small under a default paper-double-column scaling assumption.
 Validation must fail when a normal non-legend slot lacks `secondary_objects` or
 `micro_details`, or when a selected asset has unresolved `too_simple`,
 `generic_icon`, `reference_crop_ignored`, `single_object_on_blank_background`,

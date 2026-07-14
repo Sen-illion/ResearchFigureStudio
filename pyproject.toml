@@ -16,6 +16,12 @@ dependencies = [
   "pywin32; platform_system == 'Windows'"
 ]
 
+[project.optional-dependencies]
+ocr = [
+  "paddleocr",
+  "easyocr"
+]
+
 [project.scripts]
 rfs = "rfs.cli:main"
 

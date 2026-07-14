@@ -36,6 +36,13 @@ Minimum top-level keys:
   no-crop fit status plus `visual_spec_id`
 - `labels`: PPT-editable text objects, including module names, variables,
   captions, panel IDs, and formulas
+- `text_program_path`, `reference_text_geometry_path`, and
+  `text_alignment_report_path`: required reference-first text-layer artifacts
+  used by the PPT compiler
+- `text_program`: embedded editable text items derived from
+  `reference_text_geometry.json`; each item must bind to a reference text
+  region, record bbox/center/relative font height/color, and render as PPTX
+  text
 - `arrows`: PPT-editable connectors with `source_id`, `target_id`,
   `source_anchor`, `target_anchor`, multi-point `path_percent`,
   `style_token_id`, `semantic_role`, `route_style`, `bundle_id`,
@@ -128,6 +135,28 @@ Minimum top-level keys:
     }
   ],
   "labels": [],
+  "reference_text_geometry_path": "reference_text_geometry.json",
+  "text_program_path": "text_program.json",
+  "text_alignment_report_path": "text_alignment_report.json",
+  "text_program": {
+    "summary": "Reference-first editable PPT text program.",
+    "items": [
+      {
+        "id": "text_panel_method_stage",
+        "text": "Method Stage",
+        "role": "panel_title",
+        "target_id": "panel_method_stage",
+        "source_reference_text_id": "ref_text_panel_method_stage",
+        "reference_binding": "reference_panel_header_geometry",
+        "bbox_percent": {"x": 0.04, "y": 0.12, "w": 0.22, "h": 0.05},
+        "center_percent": {"x": 0.15, "y": 0.145},
+        "estimated_font_ratio": 0.031,
+        "font_size_pt": 9.5,
+        "color_hex": "#FFFFFF",
+        "editable_in": "pptx"
+      }
+    ]
+  },
   "arrows": [
     {
       "id": "AR01",
@@ -179,6 +208,12 @@ Minimum top-level keys:
   JSON, but must not write arbitrary PPT code or generate a full diagram.
 - `labels`, `arrows`, `groups`, panels, formulas, variables, metrics, and panel
   IDs must be marked as PPT editable objects, usually with `editable_in: "pptx"`.
+- Text size and location are reference-first. Generate
+  `reference_text_geometry.json` and `text_program.json`; do not add a default
+  publication-scale font threshold or `paper_double_column` rule that overrides
+  the reference image. Readability notes may be written separately, but they do
+  not block delivery unless the user explicitly asks for readability-first
+  typography.
 - `arrows` must originate from `reference_controls.json` when a reference image
   exists. Heuristic arrows are a fallback only. Every arrow must include
   non-empty source/target IDs, source/target anchors, at least two normalized

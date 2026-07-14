@@ -19,6 +19,10 @@ REQUIRED = [
     "style_sheet.md",
     "layout_plan.json",
     "figure_program.json",
+    "reference_text_geometry.json",
+    "text_program.json",
+    "ocr_text_quality_report.json",
+    "text_alignment_report.json",
     "slot_visual_spec.json",
     "reference_slot_prompt_brief.json",
     "slot_prompt_plan.json",
@@ -379,6 +383,15 @@ def validate_output(out_dir: str | Path) -> dict:
             errors.append("figure_program.json style must include reference_style_profile_path")
         if not str(style.get("arrow_style_profile_path", "")).strip():
             errors.append("figure_program.json style must include arrow_style_profile_path")
+        if not str(program.get("text_program_path", "")).strip():
+            errors.append("figure_program.json must include text_program_path")
+        if not str(program.get("reference_text_geometry_path", "")).strip():
+            errors.append("figure_program.json must include reference_text_geometry_path")
+        if not str(program.get("text_alignment_report_path", "")).strip():
+            errors.append("figure_program.json must include text_alignment_report_path")
+        text_program_inline = program.get("text_program")
+        if not isinstance(text_program_inline, dict) or not isinstance(text_program_inline.get("items"), list) or not text_program_inline.get("items"):
+            errors.append("figure_program.json must embed non-empty text_program items for PPT text rendering")
         palette = style.get("reference_palette") or style.get("palette") or []
         distinct = {str(c).upper() for c in palette if str(c).strip()}
         if len(distinct) < 4:
@@ -389,6 +402,117 @@ def validate_output(out_dir: str | Path) -> dict:
                 errors.append(f"Arrow/control {arrow.get('id')} style_token_id is not present in reference color_tokens")
     except Exception as exc:
         errors.append(f"Invalid figure_program.json: {exc}")
+
+    reference_text_ids: set[str] = set()
+    try:
+        text_geometry = json.loads((root / "reference_text_geometry.json").read_text(encoding="utf-8"))
+        if "publication" in str(text_geometry.get("policy", "")).lower() and "reference" not in str(text_geometry.get("policy", "")).lower():
+            errors.append("reference_text_geometry.json policy must be reference-first, not publication-scale-first")
+        regions = text_geometry.get("text_regions", [])
+        if not isinstance(regions, list) or not regions:
+            errors.append("reference_text_geometry.json must contain non-empty text_regions")
+        for item in regions if isinstance(regions, list) else []:
+            rid = str(item.get("id") or "")
+            reference_text_ids.add(rid)
+            for key in ["bbox_percent", "center_percent", "width_percent", "height_percent", "estimated_font_ratio", "color_hex", "role", "target_id"]:
+                if key not in item:
+                    errors.append(f"reference_text_geometry item {rid} missing {key}")
+            try:
+                if float(item.get("width_percent", 0)) <= 0 or float(item.get("height_percent", 0)) <= 0:
+                    errors.append(f"reference_text_geometry item {rid} has non-positive size")
+                if float(item.get("estimated_font_ratio", 0)) <= 0:
+                    errors.append(f"reference_text_geometry item {rid} has non-positive estimated_font_ratio")
+            except Exception:
+                errors.append(f"reference_text_geometry item {rid} size/font fields must be numeric")
+            if str(item.get("editable_in", "")).lower() != "pptx":
+                errors.append(f"reference_text_geometry item {rid} must be intended for editable PPTX text")
+            color = str(item.get("color_hex", ""))
+            if not color.startswith("#") or len(color.strip()) < 7:
+                errors.append(f"reference_text_geometry item {rid} must record reference color_hex")
+            if str(text_geometry.get("detection_mode", "")).lower() == "ocr":
+                if "confidence" not in item:
+                    errors.append(f"reference_text_geometry OCR item {rid} missing confidence")
+                if not str(item.get("raw_text", "")).strip():
+                    errors.append(f"reference_text_geometry OCR item {rid} missing raw_text")
+    except Exception as exc:
+        errors.append(f"Invalid reference_text_geometry.json: {exc}")
+
+    try:
+        ocr_report = json.loads((root / "ocr_text_quality_report.json").read_text(encoding="utf-8"))
+        if not str(ocr_report.get("mode", "")).strip():
+            errors.append("ocr_text_quality_report.json missing mode")
+        if not str(ocr_report.get("status", "")).strip():
+            errors.append("ocr_text_quality_report.json missing status")
+        if str(ocr_report.get("status", "")).lower() not in {"pass", "fallback", "not_run"}:
+            errors.append("ocr_text_quality_report.json status must be pass, fallback, or not_run")
+        if "text_region_count" not in ocr_report:
+            errors.append("ocr_text_quality_report.json missing text_region_count")
+    except Exception as exc:
+        errors.append(f"Invalid ocr_text_quality_report.json: {exc}")
+
+    try:
+        text_program = json.loads((root / "text_program.json").read_text(encoding="utf-8"))
+        policy = str(text_program.get("policy", "")).lower()
+        if "paper_double_column" in policy or "minimum_effective_font" in policy:
+            errors.append("text_program.json must not apply fixed publication-scale font thresholds by default")
+        items = text_program.get("items", [])
+        if not isinstance(items, list) or not items:
+            errors.append("text_program.json must contain non-empty items")
+        for item in items if isinstance(items, list) else []:
+            tid = str(item.get("id") or "")
+            for key in ["text", "role", "target_id", "source_reference_text_id", "reference_binding", "bbox_percent", "center_percent", "width_percent", "height_percent", "estimated_font_ratio", "font_size_pt", "color_hex", "editable_in"]:
+                if key not in item:
+                    errors.append(f"text_program item {tid} missing {key}")
+            for key in ["font_family_guess", "font_weight_guess", "fit_strategy"]:
+                if key not in item:
+                    errors.append(f"text_program item {tid} missing {key}")
+            source_id = str(item.get("source_reference_text_id") or "")
+            if source_id not in reference_text_ids:
+                errors.append(f"text_program item {tid} source_reference_text_id does not exist in reference_text_geometry.json")
+            if str(item.get("editable_in", "")).lower() != "pptx":
+                errors.append(f"text_program item {tid} must render as editable PPTX text")
+            try:
+                if float(item.get("font_size_pt", 0)) <= 0:
+                    errors.append(f"text_program item {tid} font_size_pt must be positive")
+                if float(item.get("estimated_font_ratio", 0)) <= 0:
+                    errors.append(f"text_program item {tid} estimated_font_ratio must be positive")
+            except Exception:
+                errors.append(f"text_program item {tid} font fields must be numeric")
+            binding = str(item.get("reference_binding", "")).lower()
+            if "reference" not in binding:
+                errors.append(f"text_program item {tid} must bind to a reference-derived text region")
+    except Exception as exc:
+        errors.append(f"Invalid text_program.json: {exc}")
+
+    try:
+        text_alignment = json.loads((root / "text_alignment_report.json").read_text(encoding="utf-8"))
+        policy = str(text_alignment.get("policy", "")).lower()
+        if "fixed publication" in policy or "paper_double_column" in policy:
+            errors.append("text_alignment_report.json must check reference alignment, not fixed publication font thresholds")
+        if str(text_alignment.get("status", "")).lower() in {"fail", "failed", "blocked"}:
+            errors.append("text_alignment_report.json reports failed text alignment")
+        items = text_alignment.get("items", [])
+        if not isinstance(items, list) or not items:
+            errors.append("text_alignment_report.json must contain non-empty items")
+        for item in items if isinstance(items, list) else []:
+            tid = str(item.get("label_id") or "")
+            if str(item.get("editable_in", "")).lower() != "pptx":
+                errors.append(f"text_alignment_report item {tid} is not editable in PPTX")
+            if str(item.get("status", "")).lower() in {"fail", "failed", "blocked"}:
+                errors.append(f"text_alignment_report item {tid} failed reference alignment")
+            try:
+                if float(item.get("center_delta_percent", 0)) > 0.05:
+                    errors.append(f"text_alignment_report item {tid} center drift exceeds reference tolerance")
+                if float(item.get("width_delta_percent", 0)) > 0.08:
+                    errors.append(f"text_alignment_report item {tid} width drift exceeds reference tolerance")
+                if float(item.get("height_delta_percent", 0)) > 0.06:
+                    errors.append(f"text_alignment_report item {tid} height drift exceeds reference tolerance")
+            except Exception:
+                errors.append(f"text_alignment_report item {tid} delta fields must be numeric")
+            if not str(item.get("source_reference_text_id", "")).strip():
+                errors.append(f"text_alignment_report item {tid} missing source_reference_text_id")
+    except Exception as exc:
+        errors.append(f"Invalid text_alignment_report.json: {exc}")
 
     try:
         visual_spec = json.loads((root / "slot_visual_spec.json").read_text(encoding="utf-8"))
@@ -579,7 +703,7 @@ def validate_output(out_dir: str | Path) -> dict:
         errors.append(f"Too few generated assets: {asset_count}")
 
     text_blob = ""
-    for name in ["prompts.md", "style_sheet.md", "reference_style_profile.json", "arrow_style_profile.json", "selected_arrow_routes.json", "arrow_quality_report.json", "figure_program.json", "reference_geometry.json", "reference_controls.json", "slot_visual_spec.json", "reference_slot_prompt_brief.json", "slot_prompt_plan.json", "asset_quality_report.json", "asset_complexity_report.json", "composition_quality_report.json", "asset_visual_review.json", "alignment_review.md", "critic_report.md", "visual_critic_iter_0.json"]:
+    for name in ["prompts.md", "style_sheet.md", "reference_style_profile.json", "arrow_style_profile.json", "selected_arrow_routes.json", "arrow_quality_report.json", "figure_program.json", "reference_geometry.json", "reference_controls.json", "reference_text_geometry.json", "text_program.json", "ocr_text_quality_report.json", "text_alignment_report.json", "slot_visual_spec.json", "reference_slot_prompt_brief.json", "slot_prompt_plan.json", "asset_quality_report.json", "asset_complexity_report.json", "composition_quality_report.json", "asset_visual_review.json", "alignment_review.md", "critic_report.md", "visual_critic_iter_0.json"]:
         path = root / name
         if path.exists():
             text_blob += "\n" + path.read_text(encoding="utf-8", errors="ignore").lower()

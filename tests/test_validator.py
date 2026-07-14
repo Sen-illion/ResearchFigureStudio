@@ -312,6 +312,62 @@ def _make_valid_output(root: Path, asset_count: int = 25) -> None:
     groups = [{"id": "group_a", "members": ["panel_a"], "editable_in": "pptx"}]
     labels = [{"id": "label_a", "text": "Panel A", "target_id": "panel_a", "editable_in": "pptx"}]
     reference_palette = ["#2D6FB7", "#E17721", "#6B57C8", "#1B9A94"]
+    reference_text_regions = [
+        {
+            "id": "ref_text_panel_a",
+            "text": "Panel A",
+            "role": "panel_title",
+            "target_id": "panel_a",
+            "bbox_percent": {"x": 0.03, "y": 0.03, "w": 0.9, "h": 0.055},
+            "center_percent": {"x": 0.48, "y": 0.0575},
+            "width_percent": 0.9,
+            "height_percent": 0.055,
+            "estimated_font_ratio": 0.0341,
+            "color_hex": "#FFFFFF",
+            "source": "reference_panel_header_geometry",
+            "editable_in": "pptx",
+        }
+    ]
+    text_items = [
+        {
+            "id": "text_ref_text_panel_a",
+            "text": "Panel A",
+            "role": "panel_title",
+            "target_id": "panel_a",
+            "source_reference_text_id": "ref_text_panel_a",
+            "reference_binding": "reference_panel_header_geometry",
+            "bbox_percent": {"x": 0.03, "y": 0.03, "w": 0.9, "h": 0.055},
+            "center_percent": {"x": 0.48, "y": 0.0575},
+            "width_percent": 0.9,
+            "height_percent": 0.055,
+            "estimated_font_ratio": 0.0341,
+            "font_size_pt": 8.0,
+            "color_hex": "#FFFFFF",
+            "color_token_id": "panel_a_header_001",
+            "font_family_guess": "Arial",
+            "font_weight_guess": "bold",
+            "fit_strategy": "reference_geometry_bbox",
+            "ocr_confidence": None,
+            "bold": True,
+            "align": "center",
+            "editable_in": "pptx",
+            "visible": True,
+        }
+    ]
+    text_alignment_items = [
+        {
+            "label_id": "text_ref_text_panel_a",
+            "source_reference_text_id": "ref_text_panel_a",
+            "role": "panel_title",
+            "center_delta_percent": 0.0,
+            "width_delta_percent": 0.0,
+            "height_delta_percent": 0.0,
+            "font_ratio_delta": 0.0,
+            "color_status": "reference_token",
+            "editable_in": "pptx",
+            "status": "pass",
+        }
+    ]
 
     _write_json(root / "input_manifest.json", {"summary": "Archived source inputs.", "paper_archived": "inputs/paper.pdf", "reference_archived": "inputs/reference.png"})
     _write_json(root / "reference_geometry.json", {
@@ -448,7 +504,40 @@ def _make_valid_output(root: Path, asset_count: int = 25) -> None:
         "arrows": arrows,
         "control_shapes": control_items,
         "groups": groups,
+        "text_program": {"summary": "Text program.", "items": text_items},
+        "text_program_path": "text_program.json",
+        "reference_text_geometry_path": "reference_text_geometry.json",
+        "text_alignment_report_path": "text_alignment_report.json",
         "export_targets": [{"type": "pptx", "path": "editable_composition.pptx"}],
+    })
+    _write_json(root / "reference_text_geometry.json", {
+        "summary": "Reference text geometry.",
+        "policy": "reference_image_is_highest_authority_for_text_size_position_color_and_hierarchy",
+        "detection_mode": "reference_geometry_and_local_color_sampling",
+        "text_regions": reference_text_regions,
+    })
+    _write_json(root / "text_program.json", {
+        "summary": "Text program.",
+        "policy": "match_reference_text_geometry; reference_layout_over_typography_defaults",
+        "reference_text_geometry_path": "reference_text_geometry.json",
+        "items": text_items,
+    })
+    _write_json(root / "ocr_text_quality_report.json", {
+        "summary": "OCR text extraction quality report.",
+        "mode": "heuristic",
+        "ocr_engine": "off",
+        "ocr_lang": "en_ch",
+        "status": "fallback",
+        "text_region_count": len(text_items),
+        "low_confidence_count": 0,
+        "warnings": ["using_heuristic_text_layer_fallback"],
+        "fallback_reason": "ocr_disabled",
+    })
+    _write_json(root / "text_alignment_report.json", {
+        "summary": "Text alignment report.",
+        "policy": "reference_alignment_only; no fixed typography failure condition",
+        "status": "pass",
+        "items": text_alignment_items,
     })
     _write_json(root / "reference_slot_prompt_brief.json", {"summary": "Reference slot prompt briefing.", "mode": "vlm", "slots": prompt_brief_items})
     _write_json(root / "slot_visual_spec.json", {"summary": "Slot visual spec.", "complexity_profile": "reference-dense", "slots": [{
@@ -544,6 +633,41 @@ class ValidatorTests(unittest.TestCase):
             result = validate_output(root)
             self.assertFalse(result["ok"])
             self.assertTrue(any("below 95" in err for err in result["errors"]))
+
+    def test_small_reference_matched_font_is_allowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _make_valid_output(root)
+            data = json.loads((root / "text_program.json").read_text(encoding="utf-8"))
+            data["items"][0]["font_size_pt"] = 3.0
+            _write_json(root / "text_program.json", data)
+            program = json.loads((root / "figure_program.json").read_text(encoding="utf-8"))
+            program["text_program"] = data
+            _write_json(root / "figure_program.json", program)
+            result = validate_output(root)
+            self.assertTrue(result["ok"], result["errors"])
+
+    def test_text_alignment_drift_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _make_valid_output(root)
+            data = json.loads((root / "text_alignment_report.json").read_text(encoding="utf-8"))
+            data["items"][0]["center_delta_percent"] = 0.12
+            _write_json(root / "text_alignment_report.json", data)
+            result = validate_output(root)
+            self.assertFalse(result["ok"])
+            self.assertTrue(any("center drift" in err for err in result["errors"]))
+
+    def test_text_without_reference_binding_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _make_valid_output(root)
+            data = json.loads((root / "text_program.json").read_text(encoding="utf-8"))
+            data["items"][0]["source_reference_text_id"] = "missing_reference_text"
+            _write_json(root / "text_program.json", data)
+            result = validate_output(root)
+            self.assertFalse(result["ok"])
+            self.assertTrue(any("source_reference_text_id" in err for err in result["errors"]))
 
 
 if __name__ == "__main__":

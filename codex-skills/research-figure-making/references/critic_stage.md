@@ -27,6 +27,10 @@ Minimum checks:
   not a replacement for requested image blocks
 - `text_controllability`: critical terms, variables, formulas, metrics, panel
   IDs, and arrow labels are editable layer objects
+- `reference_text_alignment`: `reference_text_geometry.json`,
+  `text_program.json`, and `text_alignment_report.json` exist; text size,
+  position, color, and hierarchy follow the reference image; no default
+  publication-width or minimum-font threshold overrides the reference
 - `ppt_editability`: `editable_composition.pptx` exists and is the main editable
   source; labels, formulas, arrows, group boxes, legends, and panel IDs are PPT
   editable objects, not baked into image2 blocks, SVG, PNG, or screenshots
@@ -76,7 +80,8 @@ Minimum checks:
   `reference_crop_ignored`, arrows baked into raster assets, missing control
   overlays, controls without source-target binding, arrow styling that
   overrides reference-locked paths, fallback routing applied to a reference
-  locked path, aesthetic routing with `reference_tunnel_preserved=false`, or
+  locked path, aesthetic routing with `reference_tunnel_preserved=false`, text
+  not bound to reference text geometry, critical text not editable in PPTX, or
   fewer than 25 slot assets for a normal system figure
 - `medium`: inconsistent style, poor slot density, unclear arrow route, weak
   reference alignment, or incomplete prompt records
@@ -95,6 +100,9 @@ For major failures:
   lack layered objects/micro-details
 - revise `figure_program.json`
 - adjust editable labels, arrows, or groups
+- rebuild `reference_text_geometry.json` and `text_program.json` when text
+  bbox, relative font height, color, or center position drift from the reference
+  image; do not fix this by applying a generic publication-font threshold
 - patch arrows only through `arrow_id`, `source_anchor`, `target_anchor`, and
   `path_percent`; do not let the critic rewrite the whole figure or emit PPT
   code
