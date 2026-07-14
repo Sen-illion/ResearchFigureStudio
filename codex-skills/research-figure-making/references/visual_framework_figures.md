@@ -47,6 +47,11 @@ Target composition:
      figure as one bitmap.
    - **Program**: write `figure_program.json` using `figure_program.md` before
      composition or layout scripting.
+   - **Reference Text Layer**: write `reference_text_geometry.json`,
+     `text_program.json`, and `text_alignment_report.json` before PPT
+     composition. Text size, position, color, and hierarchy must follow the
+     reference image. Do not apply a default publication-width or minimum-font
+     rule that overrides the reference.
    - **Complexity Spec**: write `slot_visual_spec.json` before prompt
      planning. It records reference crop objects, foreground subject,
      secondary objects, micro details, background fill elements, scientific
@@ -97,8 +102,9 @@ Target composition:
     `reference_crop_ignored`/`style_drift`.
 11. Assemble in `editable_composition.pptx` by following `figure_program.json`.
     Add all scientific labels, arrows, connector lines, and dashed loops as PPT
-    editable objects. Use contain-fit for image blocks; do not crop semantic
-    content.
+    editable objects. Text objects must come from `text_program.json`, with
+    geometry and relative font height bound to `reference_text_geometry.json`.
+    Use contain-fit for image blocks; do not crop semantic content.
 12. If a reference image was provided, compare the assembled result against it,
     write `visual_critic_iter_0.json`, and automatically adjust large coordinate
     mismatches before final export when the fix is mechanical.
@@ -119,6 +125,9 @@ For image-rich system figures, leave these artifacts in the output directory:
 - `input_manifest.json`
 - `layout_plan.json`
 - `figure_program.json`
+- `reference_text_geometry.json`
+- `text_program.json`
+- `text_alignment_report.json`
 - `slot_visual_spec.json`
 - `reference_slot_prompt_brief.json`
 - `slot_prompt_plan.json`
@@ -204,6 +213,13 @@ Always add these outside AI images:
 - panel letters such as A/B/C
 - legends and color keys
 - section dividers such as training, inference, evaluation, or deployment
+
+For reference-primary figures, editable text must be planned through
+`reference_text_geometry.json` and `text_program.json`. Match the reference
+image's text bbox, center, relative height, color, and hierarchy. Do not
+introduce a default `paper_double_column` or fixed minimum publication font
+threshold unless the user explicitly asks to prioritize readability over
+reference matching.
 
 Use simple but precise labels. If the paper's terminology is long, keep the full
 term in the caption and use a short visible label in the figure.

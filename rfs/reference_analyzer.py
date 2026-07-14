@@ -1,9 +1,15 @@
 ﻿from __future__ import annotations
 
+import base64
 import colorsys
+import json
+import os
 from pathlib import Path
 from typing import Any
-from PIL import Image
+
+import requests
+from PIL import Image, ImageDraw
+
 from .utils import ratio_string, write_json
 
 
@@ -229,13 +235,387 @@ def _append_unique_token(tokens: list[dict], token: dict) -> str:
     return token_id
 
 
+def _point_bbox(points: list[list[float]]) -> dict[str, float]:
+    xs = [float(point[0]) for point in points if isinstance(point, list) and len(point) >= 2]
+    ys = [float(point[1]) for point in points if isinstance(point, list) and len(point) >= 2]
+    if not xs or not ys:
+        return {"x": 0.0, "y": 0.0, "w": 0.001, "h": 0.001}
+    x0, x1 = max(0.0, min(xs)), min(1.0, max(xs))
+    y0, y1 = max(0.0, min(ys)), min(1.0, max(ys))
+    return {"x": _round4(x0), "y": _round4(y0), "w": _round4(max(0.001, x1 - x0)), "h": _round4(max(0.001, y1 - y0))}
+
+
+def _object_candidates(slots: list[dict], panel_geometry: list[dict]) -> list[dict]:
+    objects: list[dict] = []
+    for item in slots:
+        if isinstance(item, dict) and isinstance(item.get("bbox_percent"), dict):
+            objects.append({"id": item.get("id"), "bbox_percent": item.get("bbox_percent"), "kind": "slot"})
+    for item in panel_geometry:
+        if isinstance(item, dict) and isinstance(item.get("bbox_percent"), dict):
+            objects.append({"id": item.get("id"), "bbox_percent": item.get("bbox_percent"), "kind": "panel"})
+    return [item for item in objects if str(item.get("id", "")).strip()]
+
+
+def _point_to_bbox_distance(point: list[float], bbox: dict[str, float]) -> float:
+    px, py = float(point[0]), float(point[1])
+    x0, y0 = float(bbox["x"]), float(bbox["y"])
+    x1, y1 = x0 + float(bbox["w"]), y0 + float(bbox["h"])
+    dx = 0.0 if x0 <= px <= x1 else min(abs(px - x0), abs(px - x1))
+    dy = 0.0 if y0 <= py <= y1 else min(abs(py - y0), abs(py - y1))
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def _rank_nearest_objects(point: list[float], objects: list[dict]) -> list[dict]:
+    ranked = []
+    for obj in objects:
+        bbox = obj.get("bbox_percent")
+        if isinstance(bbox, dict):
+            ranked.append(((_point_to_bbox_distance(point, bbox), 0 if obj.get("kind") == "slot" else 1), obj))
+    return [item for _score, item in sorted(ranked, key=lambda pair: pair[0])]
+
+
+def _anchor_for_point(point: list[float], obj: dict | None) -> str:
+    if not obj or not isinstance(obj.get("bbox_percent"), dict):
+        return "auto"
+    bbox = obj["bbox_percent"]
+    px, py = float(point[0]), float(point[1])
+    x, y, w, h = float(bbox["x"]), float(bbox["y"]), float(bbox["w"]), float(bbox["h"])
+    distances = {
+        "left_mid": abs(px - x),
+        "right_mid": abs(px - (x + w)),
+        "top_mid": abs(py - y),
+        "bottom_mid": abs(py - (y + h)),
+    }
+    return min(distances, key=distances.get)
+
+
+def _bind_control_to_objects(control: dict, objects: list[dict]) -> dict:
+    path = control.get("path_percent") if isinstance(control.get("path_percent"), list) else []
+    if len(path) < 2 or not objects:
+        control.setdefault("source_id", "")
+        control.setdefault("target_id", "")
+        control.setdefault("source_anchor", "auto")
+        control.setdefault("target_anchor", "auto")
+        return control
+    source_ranked = _rank_nearest_objects(path[0], objects)
+    target_ranked = _rank_nearest_objects(path[-1], objects)
+    source_obj = source_ranked[0] if source_ranked else None
+    target_obj = target_ranked[0] if target_ranked else None
+    if source_obj and target_obj and source_obj.get("id") == target_obj.get("id") and len(target_ranked) > 1:
+        target_obj = target_ranked[1]
+    control["source_id"] = control.get("source_id") or (str(source_obj.get("id")) if source_obj else "")
+    control["target_id"] = control.get("target_id") or (str(target_obj.get("id")) if target_obj else "")
+    control["source"] = control.get("source") or control["source_id"]
+    control["target"] = control.get("target") or control["target_id"]
+    if not str(control.get("source_anchor", "")).strip() or str(control.get("source_anchor")).lower() == "auto":
+        control["source_anchor"] = _anchor_for_point(path[0], source_obj)
+    if not str(control.get("target_anchor", "")).strip() or str(control.get("target_anchor")).lower() == "auto":
+        control["target_anchor"] = _anchor_for_point(path[-1], target_obj)
+    return control
+
+
+def _control_from_path(
+    control_id: str,
+    path: list[list[float]],
+    image_width: int,
+    image_height: int,
+    control_kind: str,
+    colors: list[str],
+    style_token_id: str,
+    detected_by: str,
+    confidence: float,
+) -> dict:
+    bbox = _point_bbox(path)
+    geometry = _geometry_record(control_id, bbox, image_width, image_height, "ppt_control", colors=colors)
+    return {
+        **geometry,
+        "control_kind": control_kind,
+        "source_id": "",
+        "target_id": "",
+        "source": "",
+        "target": "",
+        "source_anchor": "auto",
+        "target_anchor": "auto",
+        "path_percent": [[_round4(point[0]), _round4(point[1])] for point in path],
+        "style_token_id": style_token_id,
+        "color_token_ids": [style_token_id] if style_token_id else [],
+        "label": "",
+        "editable_in": "pptx",
+        "render_policy": "ppt_shape_not_image_asset",
+        "slot_exclusion_reason": "arrow_or_connector_rendered_as_editable_ppt_control",
+        "detected_by": detected_by,
+        "confidence": _round3(confidence),
+    }
+
+
+def _detect_cv_control_candidates(reference_image: Image.Image, image_width: int, image_height: int, max_candidates: int = 24) -> tuple[list[dict], list[str]]:
+    warnings: list[str] = []
+    try:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+    except Exception as exc:
+        return [], [f"opencv_unavailable:{exc}"]
+
+    arr = np.array(reference_image.convert("RGB"))
+    gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    edges = cv2.Canny(gray, 60, 160)
+    min_dim = min(image_width, image_height)
+    lines = cv2.HoughLinesP(
+        edges,
+        rho=1,
+        theta=np.pi / 180,
+        threshold=max(35, int(min_dim * 0.04)),
+        minLineLength=max(28, int(min_dim * 0.055)),
+        maxLineGap=max(8, int(min_dim * 0.018)),
+    )
+    if lines is None:
+        return [], ["opencv_hough_found_no_lines"]
+
+    raw: list[tuple[float, float, list[list[float]]]] = []
+    diag = (image_width * image_width + image_height * image_height) ** 0.5
+    for line in lines[:, 0, :]:
+        x1, y1, x2, y2 = [float(v) for v in line]
+        length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+        if length / max(diag, 1.0) < 0.025:
+            continue
+        samples = []
+        for step in range(12):
+            t = step / 11
+            sx = int(round(x1 + (x2 - x1) * t))
+            sy = int(round(y1 + (y2 - y1) * t))
+            sx = max(0, min(image_width - 1, sx))
+            sy = max(0, min(image_height - 1, sy))
+            r, g, b = [float(v) / 255.0 for v in arr[sy, sx]]
+            high, low = max(r, g, b), min(r, g, b)
+            saturation = 0.0 if high <= 0 else (high - low) / high
+            brightness = (r + g + b) / 3
+            samples.append(saturation * (0.55 + min(0.45, abs(brightness - 0.5))))
+        color_score = sum(samples) / max(len(samples), 1)
+        # Direction is inferred geometrically when arrowheads are unavailable.
+        if abs(x2 - x1) >= abs(y2 - y1):
+            start, end = ((x1, y1), (x2, y2)) if x1 <= x2 else ((x2, y2), (x1, y1))
+        else:
+            start, end = ((x1, y1), (x2, y2)) if y1 <= y2 else ((x2, y2), (x1, y1))
+        path = [[start[0] / image_width, start[1] / image_height], [end[0] / image_width, end[1] / image_height]]
+        raw.append((color_score, length, [[_round4(path[0][0]), _round4(path[0][1])], [_round4(path[1][0]), _round4(path[1][1])]]))
+
+    candidates: list[dict] = []
+    seen: list[dict[str, float]] = []
+    colored_exists = any(score >= 0.10 for score, _length, _path in raw)
+    for color_score, _length, path in sorted(raw, key=lambda item: (item[0], item[1]), reverse=True):
+        if colored_exists and color_score < 0.035:
+            continue
+        bbox = _point_bbox(path)
+        if bbox["w"] < 0.012 and bbox["h"] < 0.012:
+            continue
+        duplicate = False
+        for prev in seen:
+            center_dist = abs((bbox["x"] + bbox["w"] / 2) - (prev["x"] + prev["w"] / 2)) + abs((bbox["y"] + bbox["h"] / 2) - (prev["y"] + prev["h"] / 2))
+            if center_dist < 0.018 and abs(bbox["w"] - prev["w"]) < 0.025 and abs(bbox["h"] - prev["h"]) < 0.025:
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        seen.append(bbox)
+        candidates.append({"path_percent": path, "bbox_percent": bbox, "detected_by": "opencv_hough", "confidence": 0.62})
+        if len(candidates) >= max_candidates:
+            break
+    if not candidates:
+        warnings.append("opencv_hough_lines_filtered_to_zero_candidates")
+    return candidates, warnings
+
+
+def _fallback_panel_flow_controls(panel_geometry: list[dict], image_width: int, image_height: int, style_token_id: str) -> list[dict]:
+    panels = [panel for panel in panel_geometry if panel.get("id") not in {"legend", "shared_resource_library"}]
+    panels = sorted(panels, key=lambda item: (item["bbox_percent"]["y"], item["bbox_percent"]["x"]))
+    controls = []
+    for index in range(max(0, len(panels) - 1)):
+        source = panels[index]
+        target = panels[index + 1]
+        s = source["bbox_percent"]
+        t = target["bbox_percent"]
+        path = [
+            [_round4(float(s["x"]) + float(s["w"])), _round4(float(s["y"]) + float(s["h"]) / 2)],
+            [_round4(float(t["x"])), _round4(float(t["y"]) + float(t["h"]) / 2)],
+        ]
+        control = _control_from_path(
+            f"AR{index + 1:02d}",
+            path,
+            image_width,
+            image_height,
+            "straight_arrow",
+            [],
+            style_token_id,
+            "heuristic_panel_flow_fallback",
+            0.42,
+        )
+        control.update({
+            "source_id": str(source["id"]),
+            "target_id": str(target["id"]),
+            "source": str(source["id"]),
+            "target": str(target["id"]),
+            "source_anchor": "right_mid",
+            "target_anchor": "left_mid",
+        })
+        controls.append(control)
+    return controls
+
+
+def _draw_slot_overlay(reference_image: Image.Image, slots: list[dict], panel_geometry: list[dict], out_dir: Path) -> str:
+    image = reference_image.copy()
+    draw = ImageDraw.Draw(image)
+    width, height = image.size
+    for panel in panel_geometry:
+        bbox = panel.get("bbox_percent")
+        if not isinstance(bbox, dict):
+            continue
+        x0, y0 = int(float(bbox["x"]) * width), int(float(bbox["y"]) * height)
+        x1, y1 = int((float(bbox["x"]) + float(bbox["w"])) * width), int((float(bbox["y"]) + float(bbox["h"])) * height)
+        draw.rectangle([x0, y0, x1, y1], outline="#2255CC", width=max(2, width // 600))
+        draw.text((x0 + 4, y0 + 4), str(panel.get("id")), fill="#2255CC")
+    for index, slot in enumerate(slots, start=1):
+        bbox = slot.get("bbox_percent")
+        if not isinstance(bbox, dict):
+            continue
+        x0, y0 = int(float(bbox["x"]) * width), int(float(bbox["y"]) * height)
+        x1, y1 = int((float(bbox["x"]) + float(bbox["w"])) * width), int((float(bbox["y"]) + float(bbox["h"])) * height)
+        label = f"S{index:02d}:{slot.get('id')}"
+        draw.rectangle([x0, y0, x1, y1], outline="#00A2FF", width=max(2, width // 700))
+        draw.rectangle([x0, max(0, y0 - 14), min(width, x0 + max(50, len(label) * 6)), y0], fill="#00A2FF")
+        draw.text((x0 + 2, max(0, y0 - 13)), label, fill="#FFFFFF")
+    path = out_dir / "slot_overlay.png"
+    image.save(path)
+    return path.name
+
+
+def _draw_control_overlay(reference_image: Image.Image, controls: list[dict], out_dir: Path) -> str:
+    image = reference_image.copy()
+    draw = ImageDraw.Draw(image)
+    width, height = image.size
+    line_width = max(3, width // 420)
+    for index, control in enumerate(controls, start=1):
+        path = control.get("path_percent") if isinstance(control.get("path_percent"), list) else []
+        points = [(int(float(point[0]) * width), int(float(point[1]) * height)) for point in path if isinstance(point, list) and len(point) >= 2]
+        if len(points) >= 2:
+            for a, b in zip(points[:-1], points[1:]):
+                draw.line([a, b], fill="#F05A28", width=line_width)
+            lx, ly = points[len(points) // 2]
+        else:
+            bbox = control.get("bbox_percent") if isinstance(control.get("bbox_percent"), dict) else {"x": 0.02, "y": 0.02}
+            lx, ly = int(float(bbox["x"]) * width), int(float(bbox["y"]) * height)
+        label = str(control.get("candidate_label") or control.get("id") or f"AR{index:02d}")
+        draw.ellipse([lx - 12, ly - 12, lx + 12, ly + 12], fill="#F05A28", outline="#FFFFFF", width=2)
+        draw.text((lx + 14, ly - 9), label, fill="#F05A28")
+    path = out_dir / "reference_control_overlay.png"
+    image.save(path)
+    return path.name
+
+
+def _call_vlm_control_binding(reference_path: str | Path, slot_overlay_path: str | Path, control_overlay_path: str | Path, candidates: list[dict], objects: list[dict]) -> tuple[list[dict], list[str]]:
+    api_base = os.getenv("API_BASE", "").rstrip("/")
+    api_key = os.getenv("API_KEY") or os.getenv("GEMINI_API_KEY")
+    model_name = os.getenv("RFS_CONTROL_LOCALIZER_MODEL") or os.getenv("MODEL_VLM") or os.getenv("RFS_LOCATOR_MODEL") or "gemini-3-pro-preview-thinking"
+    if not api_base or not api_key:
+        return candidates, ["hybrid_downgraded_to_heuristic:no_api_credentials"]
+
+    def image_part(path: str | Path) -> dict:
+        b64 = base64.b64encode(Path(path).read_bytes()).decode("utf-8")
+        return {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+
+    prompt = f"""
+You are binding editable PPT arrows/connectors for a scientific figure.
+Use image 1 as the original reference, image 2 as slot ID overlay, and image 3 as arrow/control candidate overlay.
+Only output JSON. Do not draw a figure.
+
+Rules:
+- Arrows/connectors must remain editable PPT controls, never image assets.
+- Preserve the reference image flow logic.
+- Use only object ids from the provided object list for source_id and target_id.
+- Keep path_percent as normalized coordinates.
+- If direction is uncertain, choose the most plausible source-target based on arrow direction and layout flow.
+
+Return schema:
+{{"summary":"...","controls":[{{"id":"AR01","source_id":"...","target_id":"...","source_anchor":"right_mid","target_anchor":"left_mid","path_percent":[[0.1,0.2],[0.3,0.2]],"control_kind":"straight_arrow|elbow_connector|branch_connector|dashed_loop","confidence":0.0}}]}}
+
+Objects:
+{json.dumps([{"id": item.get("id"), "kind": item.get("kind"), "bbox_percent": item.get("bbox_percent")} for item in objects], ensure_ascii=False)}
+
+Candidates:
+{json.dumps([{key: item.get(key) for key in ["id", "control_kind", "bbox_percent", "path_percent", "detected_by", "confidence"]} for item in candidates], ensure_ascii=False)}
+""".strip()
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}, image_part(reference_path), image_part(slot_overlay_path), image_part(control_overlay_path)]}],
+        "temperature": 0.1,
+    }
+    try:
+        response = requests.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, data=json.dumps(payload), timeout=180)
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        cleaned = content.strip().replace("```json", "```")
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```", 2)[1].strip()
+        parsed = json.loads(cleaned[cleaned.find("{"): cleaned.rfind("}") + 1])
+        patches = {str(item.get("id")): item for item in parsed.get("controls", []) if isinstance(item, dict)}
+    except Exception as exc:
+        return candidates, [f"vlm_control_binding_failed:{exc}"]
+
+    object_ids = {str(item.get("id")) for item in objects}
+    patched = []
+    for item in candidates:
+        merged = dict(item)
+        patch = patches.get(str(item.get("id")))
+        if patch:
+            if str(patch.get("source_id")) in object_ids:
+                merged["source_id"] = str(patch.get("source_id"))
+                merged["source"] = merged["source_id"]
+            if str(patch.get("target_id")) in object_ids:
+                merged["target_id"] = str(patch.get("target_id"))
+                merged["target"] = merged["target_id"]
+            if isinstance(patch.get("path_percent"), list) and len(patch["path_percent"]) >= 2:
+                merged["path_percent"] = [[_round4(point[0]), _round4(point[1])] for point in patch["path_percent"] if isinstance(point, list) and len(point) >= 2]
+            if str(patch.get("source_anchor", "")).strip():
+                merged["source_anchor"] = str(patch.get("source_anchor"))
+            if str(patch.get("target_anchor", "")).strip():
+                merged["target_anchor"] = str(patch.get("target_anchor"))
+            if str(patch.get("control_kind", "")).strip():
+                merged["control_kind"] = str(patch.get("control_kind"))
+            merged["confidence"] = _round3(float(patch.get("confidence", merged.get("confidence", 0.65)) or 0.65))
+            merged["binding_source"] = "vlm"
+        patched.append(merged)
+    return patched, []
+
+
 def _supplement_reference_slots(slot_specs: list[Any], target_count: int) -> list[Any]:
     """Split large reference cards into detail slots instead of counting arrows."""
     if len(slot_specs) >= target_count:
         return slot_specs
     expandable = [spec for spec in slot_specs if isinstance(spec, dict) and isinstance(spec.get("bbox_percent"), dict)]
     if not expandable:
-        return slot_specs
+        if not slot_specs:
+            return slot_specs
+        supplemented = list(slot_specs)
+        detail_index = 1
+        while len(supplemented) < target_count:
+            base = slot_specs[(detail_index - 1) % len(slot_specs)]
+            base_id = str(_spec_value(base, "id") or f"slot_{detail_index:02d}")
+            panel = str(_spec_value(base, "macro_panel") or "Paper Method")
+            concept = str(_spec_value(base, "paper_concept") or base_id)
+            composition = str(_spec_value(base, "composition_type") or "full_bleed_card")
+            supplemented.append({
+                "id": f"{base_id}_detail_{detail_index:02d}",
+                "macro_panel": panel,
+                "paper_concept": f"{concept} local detail {detail_index}",
+                "composition_type": "scene_thumbnail" if composition != "symbol_cutout" else "full_frame_icon",
+                "visual_metaphor": str(_spec_value(base, "visual_metaphor") or ""),
+                "must_show": _spec_value(base, "must_show") if isinstance(_spec_value(base, "must_show"), list) else [],
+                "avoid_showing": _spec_value(base, "avoid_showing") if isinstance(_spec_value(base, "avoid_showing"), list) else [],
+                "display_label": "",
+                "show_slot_caption": False,
+            })
+            detail_index += 1
+        return supplemented
     supplemented = list(slot_specs)
     detail_index = 1
     while len(supplemented) < target_count:
@@ -980,13 +1360,29 @@ def _slot_bbox(panel: str, index_in_panel: int, count_in_panel: int, panel_layou
     }
 
 
-def analyze_reference(reference_path: str | Path, paper_brief: dict, out_dir: str | Path, slot_count: int = 36, slot_source: str | None = None) -> dict:
+def analyze_reference(
+    reference_path: str | Path,
+    paper_brief: dict,
+    out_dir: str | Path,
+    slot_count: int = 36,
+    slot_source: str | None = None,
+    control_localizer_mode: str = "hybrid",
+) -> dict:
     p = Path(reference_path)
     with Image.open(p) as img:
         width, height = img.size
         reference_image = img.convert("RGB").copy()
 
+    out_path = Path(out_dir)
     slot_count = max(25, min(50, int(slot_count)))
+    requested_control_mode = str(control_localizer_mode or "hybrid").lower().replace("_", "-")
+    if requested_control_mode not in {"off", "heuristic", "hybrid"}:
+        requested_control_mode = "hybrid"
+    effective_control_mode = requested_control_mode
+    control_warnings: list[str] = []
+    if requested_control_mode == "hybrid" and not ((os.getenv("API_BASE", "").strip()) and (os.getenv("API_KEY", "").strip() or os.getenv("GEMINI_API_KEY", "").strip())):
+        effective_control_mode = "heuristic"
+        control_warnings.append("hybrid_downgraded_to_heuristic:no_api_credentials")
     allow_legacy_templates = False
     try:
         import os
@@ -1174,6 +1570,7 @@ def analyze_reference(reference_path: str | Path, paper_brief: dict, out_dir: st
         slot["local_color_token_ids"] = token_ids
         slot["reference_color_token_ids"] = token_ids
 
+    objects = _object_candidates(slots, panel_geometry)
     controls = []
     for spec in control_specs:
         control_id = str(_spec_value(spec, "id"))
@@ -1194,23 +1591,71 @@ def analyze_reference(reference_path: str | Path, paper_brief: dict, out_dir: st
             color_tokens,
             _color_token(f"{control_id}_stroke_001", style_color, f"control:{control_id}", "arrow_or_connector_stroke", bbox),
         )
-        geometry = _geometry_record(control_id, bbox, width, height, "ppt_control", colors=control_colors)
-        controls.append({
-            **geometry,
-            "control_kind": control_type,
+        path = _control_path_percent(bbox, control_type)
+        control = _control_from_path(
+            control_id,
+            path,
+            width,
+            height,
+            control_type,
+            control_colors,
+            style_token_id,
+            "explicit_reference_template",
+            0.90,
+        )
+        control.update({
             "source_id": source_id,
             "target_id": target_id,
             "target_ids": target_ids,
             "source": source_id,
             "target": target_id,
-            "path_percent": _control_path_percent(geometry["bbox_percent"], control_type),
-            "style_token_id": style_token_id,
-            "color_token_ids": [style_token_id],
-            "label": "",
-            "editable_in": "pptx",
-            "render_policy": "ppt_shape_not_image_asset",
-            "slot_exclusion_reason": "arrow_or_connector_rendered_as_editable_ppt_control",
+            "binding_source": "explicit_template_mapping" if source_id and target_id else "nearest_object_heuristic",
         })
+        controls.append(_bind_control_to_objects(control, objects))
+
+    if requested_control_mode != "off" and not controls:
+        detected, warnings = _detect_cv_control_candidates(reference_image, width, height)
+        control_warnings.extend(warnings)
+        for index, candidate in enumerate(detected, start=1):
+            bbox = candidate["bbox_percent"]
+            colors = _dominant_colors(_crop_bbox(reference_image, bbox), limit=4)
+            style_color = (colors or reference_palette or ["#666666"])[0]
+            control_id = f"AR{index:02d}"
+            style_token_id = _append_unique_token(
+                color_tokens,
+                _color_token(f"{control_id}_stroke_001", style_color, f"control:{control_id}", "arrow_or_connector_stroke", bbox),
+            )
+            control = _control_from_path(
+                control_id,
+                candidate["path_percent"],
+                width,
+                height,
+                "straight_arrow",
+                colors,
+                style_token_id,
+                str(candidate.get("detected_by") or "opencv_hough"),
+                float(candidate.get("confidence", 0.62)),
+            )
+            control["binding_source"] = "nearest_object_heuristic"
+            controls.append(_bind_control_to_objects(control, objects))
+        if not controls:
+            default_token = next((str(item.get("token_id")) for item in color_tokens if item.get("token_id")), "")
+            controls = _fallback_panel_flow_controls(panel_geometry, width, height, default_token)
+            control_warnings.append("control_candidates_fell_back_to_panel_flow")
+
+    for index, control in enumerate(controls, start=1):
+        control["candidate_label"] = control.get("candidate_label") or f"AR{index:02d}"
+        control.setdefault("source_anchor", "auto")
+        control.setdefault("target_anchor", "auto")
+        control.setdefault("editable_in", "pptx")
+        control.setdefault("render_policy", "ppt_shape_not_image_asset")
+
+    slot_overlay_path = _draw_slot_overlay(reference_image, slots, panel_geometry, out_path)
+    control_overlay_path = _draw_control_overlay(reference_image, controls, out_path)
+    if requested_control_mode == "hybrid" and effective_control_mode == "hybrid" and controls:
+        controls, vlm_warnings = _call_vlm_control_binding(p, out_path / slot_overlay_path, out_path / control_overlay_path, controls, objects)
+        control_warnings.extend(vlm_warnings)
+        control_overlay_path = _draw_control_overlay(reference_image, controls, out_path)
 
     slot_geometry = []
     for slot in slots:
@@ -1228,15 +1673,42 @@ def analyze_reference(reference_path: str | Path, paper_brief: dict, out_dir: st
         "panels": panel_geometry,
         "slots": slot_geometry,
         "controls": controls,
+        "control_localizer": {
+            "requested_mode": requested_control_mode,
+            "effective_mode": effective_control_mode,
+            "candidate_count": len(controls),
+            "candidate_path": "reference_control_candidates.json",
+            "slot_overlay_path": slot_overlay_path,
+            "control_overlay_path": control_overlay_path,
+            "warnings": control_warnings,
+        },
         "panel_styles": panel_styles,
         "reference_palette": reference_palette[:12],
         "color_tokens": color_tokens,
         "geometry_precision": "normalized coordinates and ratios preserve at least three decimals",
     }
+    reference_control_candidates = {
+        "summary": "AutoFigure-Edit-inspired control candidate boxlib for editable PPT arrows, connectors, loops, and branch routes.",
+        "reference_path": str(p),
+        "reference_size_px": {"width": width, "height": height},
+        "requested_mode": requested_control_mode,
+        "effective_mode": effective_control_mode,
+        "slot_overlay_path": slot_overlay_path,
+        "control_overlay_path": control_overlay_path,
+        "candidate_count": len(controls),
+        "candidates": controls,
+        "object_ids": [str(item.get("id")) for item in objects],
+        "warnings": control_warnings,
+    }
     reference_controls = {
         "summary": "Reference arrows, connectors, loops, and other non-image controls measured from the reference image for editable PPT rendering.",
         "reference_path": str(p),
         "reference_size_px": {"width": width, "height": height},
+        "requested_mode": requested_control_mode,
+        "effective_mode": effective_control_mode,
+        "candidate_path": "reference_control_candidates.json",
+        "slot_overlay_path": slot_overlay_path,
+        "control_overlay_path": control_overlay_path,
         "controls": controls,
         "ppt_arrows": controls,
         "render_policy": "ppt_shape_not_image_asset",
@@ -1253,6 +1725,17 @@ def analyze_reference(reference_path: str | Path, paper_brief: dict, out_dir: st
         "canvas_aspect_ratio_w_h": ratio_string(width, height),
         "reference_palette": reference_palette[:12],
         "color_tokens": color_tokens,
+        "control_localizer": {
+            "requested_mode": requested_control_mode,
+            "effective_mode": effective_control_mode,
+            "candidate_path": "reference_control_candidates.json",
+            "slot_overlay_path": slot_overlay_path,
+            "control_overlay_path": control_overlay_path,
+            "warnings": control_warnings,
+        },
+        "reference_control_candidates_path": "reference_control_candidates.json",
+        "slot_overlay_path": slot_overlay_path,
+        "reference_control_overlay_path": control_overlay_path,
         "reference_controls_path": "reference_controls.json",
         "panel_styles": panel_styles,
         "controls": controls,
@@ -1265,6 +1748,7 @@ def analyze_reference(reference_path: str | Path, paper_brief: dict, out_dir: st
         "slot_count": len(slots),
         "slots": slots,
     }
+    write_json(Path(out_dir) / "reference_control_candidates.json", reference_control_candidates)
     write_json(Path(out_dir) / "reference_geometry.json", reference_geometry)
     write_json(Path(out_dir) / "reference_controls.json", reference_controls)
     write_json(Path(out_dir) / "slot_inventory.json", inventory)

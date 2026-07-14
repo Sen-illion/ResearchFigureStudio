@@ -43,6 +43,7 @@ assets_raw/
 
 # Keep repository-authored docs/examples if explicitly tracked by extension overrides
 !docs/**/*.md
+!docs/assets/*.png
 !examples/**/*.md
 !codex-skills/**/*.md
 !codex-skills/**/*.yaml

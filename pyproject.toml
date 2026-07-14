@@ -12,7 +12,14 @@ dependencies = [
   "python-pptx",
   "PyMuPDF",
   "requests",
+  "opencv-python-headless",
   "pywin32; platform_system == 'Windows'"
+]
+
+[project.optional-dependencies]
+ocr = [
+  "paddleocr",
+  "easyocr"
 ]
 
 [project.scripts]

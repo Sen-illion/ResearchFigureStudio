@@ -146,7 +146,7 @@ Return schema:
   "mode": "vlm",
   "status": "pass|needs_layout_refinement|blocked",
   "layout_corrections": [{{"target_id":"slot_or_panel_id","bbox_percent":{{"x":0,"y":0,"w":0.1,"h":0.1}},"reason":"..."}}],
-  "arrow_corrections": [{{"arrow_id":"...","path_percent":[[0.1,0.2],[0.3,0.2]],"reason":"..."}}],
+  "arrow_corrections": [{{"arrow_id":"...","source_anchor":"right_mid","target_anchor":"left_mid","path_percent":[[0.1,0.2],[0.3,0.2]],"reason":"..."}}],
   "asset_issues": [{{"slot_id":"...","issue_tags":["too_small"],"reason":"..."}}],
   "ppt_editability_issues": ["..."],
   "blocking_issues": ["..."]
@@ -170,13 +170,10 @@ Slots:
 
 def apply_layout_corrections(layout_plan: dict, critic: dict) -> tuple[dict, int]:
     corrections = critic.get("layout_corrections", [])
-    if not isinstance(corrections, list) or not corrections:
-        return layout_plan, 0
-
     changed = 0
     by_id = {item.get("id"): item for item in layout_plan.get("slots", []) if isinstance(item, dict)}
     by_id.update({item.get("id"): item for item in layout_plan.get("panels", []) if isinstance(item, dict)})
-    for correction in corrections:
+    for correction in corrections if isinstance(corrections, list) else []:
         if not isinstance(correction, dict):
             continue
         target_id = correction.get("target_id")
@@ -193,6 +190,10 @@ def apply_layout_corrections(layout_plan: dict, critic: dict) -> tuple[dict, int
         path = correction.get("path_percent")
         if arrow_id in arrow_by_id and isinstance(path, list):
             arrow_by_id[arrow_id]["path_percent"] = path
+            if str(correction.get("source_anchor", "")).strip():
+                arrow_by_id[arrow_id]["source_anchor"] = str(correction.get("source_anchor"))
+            if str(correction.get("target_anchor", "")).strip():
+                arrow_by_id[arrow_id]["target_anchor"] = str(correction.get("target_anchor"))
             changed += 1
 
     return layout_plan, changed

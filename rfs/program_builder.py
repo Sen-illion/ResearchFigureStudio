@@ -50,8 +50,14 @@ def _control_record_from_arrow(arrow: dict) -> dict:
         "aspect_ratio_w_h": ratio_string(w, h),
         "source_id": arrow.get("source_id") or arrow.get("source"),
         "target_id": arrow.get("target_id") or arrow.get("target"),
+        "source_anchor": arrow.get("source_anchor") or "auto",
+        "target_anchor": arrow.get("target_anchor") or "auto",
         "path_percent": points,
         "style_token_id": arrow.get("style_token_id"),
+        "candidate_label": arrow.get("candidate_label"),
+        "detected_by": arrow.get("detected_by"),
+        "binding_source": arrow.get("binding_source"),
+        "confidence": arrow.get("confidence"),
         "editable_in": "pptx",
         "render_policy": "ppt_shape_not_image_asset",
     }
@@ -74,6 +80,8 @@ def build_figure_program(paper_brief: dict, inventory: dict, style: dict, out_di
         arrow["target"] = arrow.get("target") or arrow.get("target_id") or ""
         arrow["source_id"] = arrow.get("source_id") or arrow.get("source")
         arrow["target_id"] = arrow.get("target_id") or arrow.get("target")
+        arrow["source_anchor"] = arrow.get("source_anchor") or "auto"
+        arrow["target_anchor"] = arrow.get("target_anchor") or "auto"
         arrow["editable_in"] = "pptx"
         arrow["render_policy"] = arrow.get("render_policy") or "ppt_shape_not_image_asset"
         arrow["style_token_id"] = arrow.get("style_token_id") or default_arrow_token
@@ -167,6 +175,11 @@ def build_figure_program(paper_brief: dict, inventory: dict, style: dict, out_di
     controls_doc = {
         "summary": "Reference arrows, connectors, loops, and other non-image controls measured for editable PPT rendering.",
         "reference_path": layout_plan.get("reference_path") or inventory.get("reference_path"),
+        "candidate_path": inventory.get("reference_control_candidates_path") or "reference_control_candidates.json",
+        "slot_overlay_path": inventory.get("slot_overlay_path"),
+        "control_overlay_path": inventory.get("reference_control_overlay_path"),
+        "requested_mode": (inventory.get("control_localizer") or {}).get("requested_mode"),
+        "effective_mode": (inventory.get("control_localizer") or {}).get("effective_mode"),
         "controls": [_control_record_from_arrow(arrow) for arrow in arrows],
         "ppt_arrows": [_control_record_from_arrow(arrow) for arrow in arrows],
         "render_policy": "ppt_shape_not_image_asset",

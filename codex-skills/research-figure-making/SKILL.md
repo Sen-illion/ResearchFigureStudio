@@ -61,7 +61,7 @@ When `D:\ResearchFigureStudio` and the `rfs` CLI are available, use them as the
 default implementation for image-rich framework figures:
 
 ```powershell
-rfs make-framework --paper <paper> --reference <reference_image> --out <output_dir> --slot-count 40 --slot-source reference-primary --complexity-profile reference-dense --candidates-per-slot 4 --locator-mode vlm --prompt-plan-mode vlm --prompt-plan-workers 8 --asset-mode image2 --asset-workers 6 --asset-retries 3 --asset-review-mode heuristic --critic-mode heuristic
+rfs make-framework --paper <paper> --reference <reference_image> --out <output_dir> --slot-count 40 --slot-source reference-primary --complexity-profile reference-dense --candidates-per-slot 4 --locator-mode vlm --control-localizer-mode hybrid --arrow-style-mode reference --prompt-plan-mode vlm --prompt-plan-workers 8 --asset-mode image2 --asset-workers 6 --asset-retries 3 --asset-review-mode heuristic --critic-mode heuristic
 ```
 
 Use `--asset-mode image2` for real image generation through the Yunwu
@@ -82,6 +82,31 @@ local slot before producing `slot_prompt_plan.json`. Use heuristic prompt
 planning only for offline engineering validation. Use `--prompt-plan-workers`
 to parallelize per-slot VLM prompt planning; use `--asset-workers` separately to
 parallelize Yunwu image2/Gemini image generation.
+Use `--control-localizer-mode hybrid` by default for arrow and connector
+localization. This AutoFigure-inspired stage writes
+`reference_control_candidates.json`, `slot_overlay.png`, and
+`reference_control_overlay.png`; VLM binding may assign source-target semantics
+from those overlays, while the fallback heuristic keeps the workflow offline.
+The VLM may patch arrow IDs, anchors, and normalized paths only; it must not
+write PPT code, rasterize arrows, or redraw the full figure.
+Use `--arrow-style-mode reference` by default. This stage may soften PPT
+connector line caps, vary stroke widths, assign bundle/lane metadata, and score
+crossing/bend/overlap quality, but the reference image remains the hard
+constraint. It must not replace reference-derived flow logic with a generic
+graph router. Orthogonal obstacle-aware routing is allowed only for missing
+paths or arrows explicitly marked `route_policy=fallback_reroute_allowed`; it
+must never rewrite reference-locked `path_percent` values.
+Use `--arrow-style-mode aesthetic` only for an explicit experimental
+beautification pass. In that mode, the router may apply curve connectors and
+halo underlays by default. Bundle lane offsets require explicit route opt-in
+and must stay inside `reference_tunnel_percent`; the router must record
+`reference_original_path_percent`, `reference_path_delta_max`, and
+`reference_tunnel_preserved`, and it must not change source-target logic.
+Use `rfs presentations-qa --out <output_dir>` only as an optional QA pass when
+the Presentations plugin is available. Presentations may import/render the PPTX,
+extract layout JSON, and report connector/font/rendering drift, but it must not
+mutate the PPTX, rewrite arrows, regenerate layout, or replace RFS as the
+authoritative compiler for reference-locked connector-heavy figures.
 
 Before execution, read these references in this order:
 
@@ -114,10 +139,24 @@ Execution checklist:
    decimals where numeric precision matters. `target_pixels` must equal
    `target_pixels_exact`; use `generation_min_pixels` only for the image
    generator's minimum resolution safeguard.
-   Also write `reference_controls.json` for measured arrows, connector lines,
-   dashed loops, transition arrows, framework shapes, and text regions. These
-   controls must record geometry, source/target logic, path, color token, and
-   `render_policy: ppt_shape_not_image_asset`.
+   Also write `reference_control_candidates.json`,
+   `slot_overlay.png`, `reference_control_overlay.png`, and
+   `reference_controls.json` for measured arrows, connector lines, dashed
+   loops, transition arrows, framework shapes, and text regions. Control
+   candidates are analogous to a boxlib/overlay layer: they identify possible
+   arrows and connectors from the reference image before semantic binding.
+   Bound controls must record geometry, `source_id`, `target_id`,
+   `source_anchor`, `target_anchor`, multi-point `path_percent`, color token,
+   and `render_policy: ppt_shape_not_image_asset`.
+   Then write `arrow_style_profile.json`, `selected_arrow_routes.json`, and
+   `arrow_quality_report.json`. These files must state
+   `reference_image_hard_constraint`, preserve locked reference paths, and only
+   synthesize missing or explicitly fallback-allowed paths. If fallback routing
+   is used, record `routing_algorithm`, `route_generation_status`, candidate
+   count, and obstacle/crossing metrics.
+   If `--arrow-style-mode aesthetic` is used, also record original reference
+   paths, tunnel width, path delta, halo settings, connector type, and whether
+   each adjusted route stayed inside the reference tunnel.
 3. Create a slot inventory before using image2. Default to 25-50 image slots for
    a normal paper system figure. This count means non-arrow image slots only;
    arrows, connector lines, dashed loops, panel frames, and titles must not be
@@ -141,6 +180,15 @@ Execution checklist:
    slot positions. Do not convert exact reference ratios into coarse presets
    like `1:1`, `4:3`, `3:4`, `16:9`, or `9:16`; use precise decimal ratios such
    as `0.538:1.000`.
+   Text size, position, color, and hierarchy are reference-primary too. Do not
+   create a default `publication_scale.json`, do not enforce a fixed
+   `paper_double_column` target width, and do not fail a figure only because a
+   reference-matched label would be small after manuscript scaling. Instead,
+   write `reference_text_geometry.json`, `text_program.json`, and
+   `text_alignment_report.json`. These files must preserve the reference
+   image's text bbox, center, relative font height, color, role, and hierarchy.
+   The paper may adapt terminology, but the PPT text layer must stay editable
+   and must not override the reference layout with a generic typography rule.
 6. Write `slot_visual_spec.json`, `reference_slot_prompt_brief.json`, and
    `slot_prompt_plan.json` before image generation. `slot_visual_spec.json`
    records each slot's reference crop objects, foreground subject, secondary
@@ -190,16 +238,22 @@ Execution checklist:
     Major failures must be fixed or the delivery must stop.
 12. Run `scripts/validate_framework_outputs.py <output_dir>` before final
     delivery when a local output directory exists.
+13. Optionally run `rfs presentations-qa --out <output_dir>` after validation.
+    Treat `autoRouteConnectorPx failed` or similar plugin connector fallback
+    warnings as QA evidence. Do not let the Presentations plugin rebuild the
+    figure or override RFS connector geometry.
 
 Hard workflow order:
 
 `input archive -> paper brief -> reference slot/control analysis -> reference_geometry.json ->
-reference_controls.json -> reference_style_profile.json/style sheet ->
-layout_plan.json -> figure_program.json -> slot_visual_spec.json ->
+reference_control_candidates.json -> slot_overlay.png/reference_control_overlay.png ->
+reference_controls.json -> arrow_style_profile.json/selected_arrow_routes.json/arrow_quality_report.json ->
+reference_style_profile.json/style sheet ->
+layout_plan.json -> figure_program.json -> reference_text_geometry.json/text_program.json/text_alignment_report.json -> slot_visual_spec.json ->
 reference_slot_prompt_brief.json -> slot_prompt_plan.json -> image2/Gemini slot prompts -> generated
 assets/asset_quality_report/asset_complexity_report/composition_quality_report/asset_visual_review/contact sheets ->
 editable_composition.pptx -> PDF/PNG export -> visual critic -> critic report ->
-final validation/export`
+final validation/export -> optional presentations QA report`
 
 Image block fill rules:
 
@@ -225,6 +279,9 @@ Forbidden shortcuts:
   the final result.
 - Do not use a browser or canvas screenshot as the primary artifact unless it is
   a rendered composition assembled from generated slot assets.
+- Do not use the Presentations plugin as the primary compiler for image-rich
+  research figures; it is QA-only unless the user explicitly asks for a
+  separate presentation deck workflow.
 - If image2/image generation is unavailable, say so and stop or ask for a
   fallback; do not silently switch to a vector-only workflow.
 
@@ -232,12 +289,21 @@ Required output files for image-rich framework figures:
 
 - `slot_inventory.json` or `slot_inventory.md`
 - `reference_geometry.json`
+- `reference_control_candidates.json`
+- `slot_overlay.png`
+- `reference_control_overlay.png`
 - `reference_controls.json`
+- `arrow_style_profile.json`
+- `selected_arrow_routes.json`
+- `arrow_quality_report.json`
 - `reference_style_profile.json`
 - `style_sheet.md` or `style_sheet.json`
 - `input_manifest.json`
 - `layout_plan.json`
 - `figure_program.json`
+- `reference_text_geometry.json`
+- `text_program.json`
+- `text_alignment_report.json`
 - `slot_visual_spec.json`
 - `reference_slot_prompt_brief.json`
 - `slot_prompt_plan.json`
@@ -256,10 +322,17 @@ Required output files for image-rich framework figures:
 - `alignment_review.md`
 - `critic_report.md` or `critic_report.json`
 
+Optional Presentations-plugin QA outputs:
+
+- `presentations_plugin_qa_report.json`
+- `presentations_plugin_qa_report.md`
+- `presentations_plugin_qa_workspace/`
+
 Validation must fail if the output uses only a single generated full-diagram
 image, lacks slot assets, lacks prompts, lacks a contact sheet, or records
 semantic cropping as the fitting strategy. Validation must also fail when the
-style sheet, layout plan, figure program, slot visual spec, reference slot
+style sheet, layout plan, figure program, reference text geometry, text program,
+text alignment report, slot visual spec, reference slot
 prompt brief, slot prompt plan, reference geometry, asset quality report, asset
 complexity report, composition quality report, asset visual review, visual
 critic report, critic report, or editable PPTX source is missing.
@@ -268,6 +341,11 @@ below its minimum or `empty_margin_percent` above its maximum.
 Validation must fail when a slot uses a coarse preset ratio, when PPT insertion
 adds an extra white tile, or when an inserted image fills less than 95% of its
 slot area.
+Validation must fail when PPT text is not bound to
+`reference_text_geometry.json`, when text center/bbox/font-ratio drift from the
+reference exceeds the recorded alignment tolerance, or when critical text is
+not editable in PPTX. Validation must not fail only because the text would be
+small under a default paper-double-column scaling assumption.
 Validation must fail when a normal non-legend slot lacks `secondary_objects` or
 `micro_details`, or when a selected asset has unresolved `too_simple`,
 `generic_icon`, `reference_crop_ignored`, `single_object_on_blank_background`,
@@ -275,8 +353,22 @@ or `style_drift`.
 Validation must fail when arrow, dashed loop, transition, or connector elements
 appear in `slots`/`assets`; they must appear in `reference_controls.json` and
 `figure_program.json` as editable PPT controls with source/target logic and
-style tokens. Validation must also fail when image slots lack local reference
-crops, local color token ids, or `reference_style_profile.json` grounding.
+style tokens. Validation must also fail when `reference_control_candidates.json`
+or the slot/control overlay images are missing, when a bound control lacks
+`source_id`, `target_id`, `source_anchor`, `target_anchor`, or at least two
+`path_percent` points, or when composition reports that a control was not
+rendered as an editable PPT connector. Validation must fail when
+`arrow_style_profile.json`, `selected_arrow_routes.json`, or
+`arrow_quality_report.json` are missing, or when an arrow style stage overrides
+a locked reference path without a documented reason. Validation must also fail
+when fallback obstacle routing is applied to a reference-locked path, or when
+route artifacts omit `routing_algorithm` / `route_generation_status`.
+For aesthetic mode, validation or critic review must fail when
+`reference_tunnel_preserved` is false, when source-target binding changes, or
+when a curve/bundle/halo style is baked into raster images instead of PPT
+editable connector shapes.
+Validation must also fail when image slots lack local reference crops, local color token ids, or
+`reference_style_profile.json` grounding.
 
 ## Core Workflow
 

@@ -503,9 +503,19 @@ def validate_program(path: Path) -> int:
         if not isinstance(arrow, dict):
             fail("figure_program.json arrows must be objects")
         aid = arrow.get("id")
-        for key in ("source_id", "target_id", "path_percent", "style_token_id", "render_policy"):
+        for key in ("source_id", "target_id", "source_anchor", "target_anchor", "path_percent", "style_token_id", "render_policy"):
             if key not in arrow or not str(arrow.get(key, "")).strip():
                 fail(f"figure_program.json arrow/control {aid} missing {key}")
+        if not isinstance(arrow.get("path_percent"), list) or len(arrow.get("path_percent", [])) < 2:
+            fail(f"figure_program.json arrow/control {aid} must have at least 2 path_percent points")
+        for key in ("semantic_role", "route_style", "line_cap", "arrowhead_size"):
+            if not str(arrow.get(key, "")).strip():
+                fail(f"figure_program.json arrow/control {aid} missing {key}")
+        for key in ("routing_algorithm", "route_generation_status"):
+            if not str(arrow.get(key, "")).strip():
+                fail(f"figure_program.json arrow/control {aid} missing {key}")
+        if arrow.get("reference_locked") and arrow.get("reference_path_preserved") is not True:
+            fail(f"figure_program.json arrow/control {aid} overrides a locked reference path")
         if str(arrow.get("render_policy", "")).lower() != "ppt_shape_not_image_asset":
             fail(f"figure_program.json arrow/control {aid} must render as PPT shape, not image asset")
 
@@ -514,12 +524,80 @@ def validate_program(path: Path) -> int:
         fail("figure_program.json style must include non-empty color_tokens")
     if not str(style.get("reference_style_profile_path", "")).strip():
         fail("figure_program.json style must include reference_style_profile_path")
+    if not str(style.get("arrow_style_profile_path", "")).strip():
+        fail("figure_program.json style must include arrow_style_profile_path")
+    if not str(data.get("text_program_path", "")).strip():
+        fail("figure_program.json must include text_program_path")
+    if not str(data.get("reference_text_geometry_path", "")).strip():
+        fail("figure_program.json must include reference_text_geometry_path")
+    if not str(data.get("text_alignment_report_path", "")).strip():
+        fail("figure_program.json must include text_alignment_report_path")
+    text_program_inline = data.get("text_program")
+    if not isinstance(text_program_inline, dict) or not isinstance(text_program_inline.get("items"), list) or not text_program_inline.get("items"):
+        fail("figure_program.json must embed non-empty text_program items")
     palette = style.get("reference_palette") or style.get("palette") or []
     distinct = {str(color).upper() for color in palette if str(color).strip()}
     if len(distinct) < 4:
         fail("figure_program.json style must preserve reference-derived palette tokens, not a hardcoded fallback template")
 
     return len(slots)
+
+
+def validate_arrow_style_profile(path: Path) -> None:
+    data = read_json(path)
+    if not isinstance(data, dict):
+        fail("arrow_style_profile.json must be a JSON object")
+    if str(data.get("reference_priority", "")).lower() != "reference_image_hard_constraint":
+        fail("arrow_style_profile.json must keep reference_image_hard_constraint")
+    if not isinstance(data.get("style_rules"), dict) or not data.get("style_rules"):
+        fail("arrow_style_profile.json must contain style_rules")
+    if "reference" not in str(data.get("routing_principle", "")).lower():
+        fail("arrow_style_profile.json routing_principle must explicitly preserve the reference image")
+    if not str(data.get("routing_algorithm", "")).strip():
+        fail("arrow_style_profile.json must record routing_algorithm")
+    if "fallback" not in str(data.get("fallback_routing_policy", "")).lower():
+        fail("arrow_style_profile.json must record fallback_routing_policy")
+
+
+def validate_selected_arrow_routes(path: Path) -> int:
+    data = read_json(path)
+    if not isinstance(data, dict):
+        fail("selected_arrow_routes.json must be a JSON object")
+    routes = data.get("routes")
+    if not isinstance(routes, list):
+        fail("selected_arrow_routes.json routes must be a list")
+    for index, item in enumerate(routes):
+        if not isinstance(item, dict):
+            fail(f"selected_arrow_routes item at index {index} must be an object")
+        rid = item.get("id", index)
+        for key in ("source_id", "target_id", "semantic_role", "route_style", "path_percent", "style_token_id", "stroke_width_pt", "arrowhead_size", "line_cap", "routing_algorithm", "route_generation_status"):
+            if key not in item or not str(item.get(key, "")).strip():
+                fail(f"selected_arrow_routes item {rid} missing {key}")
+        if item.get("reference_locked") and item.get("reference_path_preserved") is not True:
+            fail(f"selected_arrow_routes item {rid} overrides a locked reference path")
+        if not isinstance(item.get("path_percent"), list) or len(item.get("path_percent", [])) < 2:
+            fail(f"selected_arrow_routes item {rid} must have at least 2 path_percent points")
+        if str(item.get("route_generation_status", "")).lower() == "aesthetic_tunnel_adjusted":
+            if not isinstance(item.get("reference_original_path_percent"), list) or len(item.get("reference_original_path_percent", [])) < 2:
+                fail(f"selected_arrow_routes item {rid} missing reference_original_path_percent for aesthetic adjustment")
+            if item.get("reference_tunnel_preserved") is not True:
+                fail(f"selected_arrow_routes item {rid} left its reference tunnel")
+    return len(routes)
+
+
+def validate_arrow_quality_report(path: Path) -> None:
+    data = read_json(path)
+    if not isinstance(data, dict):
+        fail("arrow_quality_report.json must be a JSON object")
+    if str(data.get("status", "")).lower() in {"fail", "failed", "blocked"}:
+        fail("arrow_quality_report.json reports failed arrow quality")
+    if data.get("reference_path_overrides"):
+        fail("arrow_quality_report.json contains reference_path_overrides")
+    if data.get("reference_tunnel_violations"):
+        fail("arrow_quality_report.json contains reference_tunnel_violations")
+    for key in ("total_crossing_count", "average_aesthetic_score"):
+        if key not in data:
+            fail(f"arrow_quality_report.json missing {key}")
 
 
 def validate_slot_prompt_brief(path: Path) -> int:
@@ -630,6 +708,12 @@ def validate_reference_geometry(path: Path) -> int:
         if not isinstance(item, dict):
             fail("reference_geometry.json controls must be objects")
         validate_geometry_item(item, str(item.get("id")))
+        cid = item.get("id")
+        for key in ("source_id", "target_id", "source_anchor", "target_anchor", "path_percent"):
+            if key not in item or not str(item.get(key, "")).strip():
+                fail(f"reference_geometry control {cid} missing key: {key}")
+        if not isinstance(item.get("path_percent"), list) or len(item.get("path_percent", [])) < 2:
+            fail(f"reference_geometry control {cid} must have at least 2 path_percent points")
         if str(item.get("render_policy", "")).lower() != "ppt_shape_not_image_asset":
             fail(f"reference_geometry control {item.get('id')} must render as PPT shape, not image asset")
     palette = data.get("reference_palette")
@@ -638,6 +722,39 @@ def validate_reference_geometry(path: Path) -> int:
     if not isinstance(data.get("color_tokens"), list) or not data.get("color_tokens"):
         fail("reference_geometry.json must contain non-empty color_tokens")
     return len(slots)
+
+
+def validate_reference_control_candidates(path: Path, root: Path) -> int:
+    data = read_json(path)
+    if not isinstance(data, dict):
+        fail("reference_control_candidates.json must be a JSON object")
+    if not str(data.get("effective_mode", "")).strip():
+        fail("reference_control_candidates.json missing effective_mode")
+    for key in ("slot_overlay_path", "control_overlay_path"):
+        overlay = str(data.get(key, "")).strip()
+        if not overlay:
+            fail(f"reference_control_candidates.json missing {key}")
+        if not (root / overlay).exists() or (root / overlay).stat().st_size == 0:
+            fail(f"reference_control_candidates.json {key} does not point to a non-empty file")
+    candidates = data.get("candidates")
+    if not isinstance(candidates, list):
+        fail("reference_control_candidates.json candidates must be a list")
+    for index, item in enumerate(candidates):
+        if not isinstance(item, dict):
+            fail(f"reference_control_candidates item at index {index} must be an object")
+        cid = item.get("id", index)
+        for key in ("bbox_percent", "center_percent", "width_percent", "height_percent", "path_percent", "editable_in", "render_policy"):
+            if key not in item:
+                fail(f"reference_control_candidates item {cid} missing key: {key}")
+        if arrow_like_asset_id(item.get("asset_id")):
+            fail(f"reference_control_candidates item {cid} must not bind to an image asset")
+        if str(item.get("editable_in", "")).lower() != "pptx":
+            fail(f"reference_control_candidates item {cid} must be editable in PPTX")
+        if str(item.get("render_policy", "")).lower() != "ppt_shape_not_image_asset":
+            fail(f"reference_control_candidates item {cid} must use ppt_shape_not_image_asset")
+        if not isinstance(item.get("path_percent"), list) or len(item.get("path_percent", [])) < 2:
+            fail(f"reference_control_candidates item {cid} must have at least 2 path_percent points")
+    return len(candidates)
 
 
 def validate_reference_controls(path: Path) -> int:
@@ -651,14 +768,117 @@ def validate_reference_controls(path: Path) -> int:
         if not isinstance(item, dict):
             fail(f"reference_controls item at index {index} must be an object")
         cid = item.get("id", index)
-        for key in ("bbox_percent", "center_percent", "width_percent", "height_percent", "source_id", "target_id", "path_percent", "style_token_id", "editable_in", "render_policy"):
-            if key not in item:
+        for key in ("bbox_percent", "center_percent", "width_percent", "height_percent", "source_id", "target_id", "source_anchor", "target_anchor", "path_percent", "style_token_id", "editable_in", "render_policy"):
+            if key not in item or not str(item.get(key, "")).strip():
                 fail(f"reference_controls item {cid} missing key: {key}")
+        if not isinstance(item.get("path_percent"), list) or len(item.get("path_percent", [])) < 2:
+            fail(f"reference_controls item {cid} must have at least 2 path_percent points")
         if str(item.get("editable_in", "")).lower() != "pptx":
             fail(f"reference_controls item {cid} must be editable in PPTX")
         if str(item.get("render_policy", "")).lower() != "ppt_shape_not_image_asset":
             fail(f"reference_controls item {cid} must use ppt_shape_not_image_asset")
     return len(controls)
+
+
+def validate_reference_text_geometry(path: Path) -> set[str]:
+    data = read_json(path)
+    if not isinstance(data, dict):
+        fail("reference_text_geometry.json must be a JSON object")
+    policy = str(data.get("policy", "")).lower()
+    if "publication" in policy and "reference" not in policy:
+        fail("reference_text_geometry.json policy must be reference-first, not publication-scale-first")
+    regions = data.get("text_regions")
+    if not isinstance(regions, list) or not regions:
+        fail("reference_text_geometry.json must contain non-empty text_regions")
+    ids: set[str] = set()
+    for index, item in enumerate(regions):
+        if not isinstance(item, dict):
+            fail(f"reference_text_geometry item at index {index} must be an object")
+        rid = str(item.get("id") or index)
+        ids.add(rid)
+        for key in ("bbox_percent", "center_percent", "width_percent", "height_percent", "estimated_font_ratio", "color_hex", "role", "target_id"):
+            if key not in item:
+                fail(f"reference_text_geometry item {rid} missing key: {key}")
+        try:
+            if float(item.get("width_percent", 0)) <= 0 or float(item.get("height_percent", 0)) <= 0:
+                fail(f"reference_text_geometry item {rid} has non-positive size")
+            if float(item.get("estimated_font_ratio", 0)) <= 0:
+                fail(f"reference_text_geometry item {rid} has non-positive estimated_font_ratio")
+        except (TypeError, ValueError):
+            fail(f"reference_text_geometry item {rid} size/font fields must be numeric")
+        if str(item.get("editable_in", "")).lower() != "pptx":
+            fail(f"reference_text_geometry item {rid} must be intended for editable PPTX text")
+        color = str(item.get("color_hex", ""))
+        if not color.startswith("#") or len(color.strip()) < 7:
+            fail(f"reference_text_geometry item {rid} must record reference color_hex")
+    return ids
+
+
+def validate_text_program(path: Path, reference_text_ids: set[str]) -> int:
+    data = read_json(path)
+    if not isinstance(data, dict):
+        fail("text_program.json must be a JSON object")
+    policy = str(data.get("policy", "")).lower()
+    if "paper_double_column" in policy or "minimum_effective_font" in policy:
+        fail("text_program.json must not apply fixed publication-scale font thresholds by default")
+    items = data.get("items")
+    if not isinstance(items, list) or not items:
+        fail("text_program.json must contain non-empty items")
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            fail(f"text_program item at index {index} must be an object")
+        tid = str(item.get("id") or index)
+        for key in ("text", "role", "target_id", "source_reference_text_id", "reference_binding", "bbox_percent", "center_percent", "width_percent", "height_percent", "estimated_font_ratio", "font_size_pt", "color_hex", "editable_in"):
+            if key not in item:
+                fail(f"text_program item {tid} missing key: {key}")
+        if str(item.get("source_reference_text_id") or "") not in reference_text_ids:
+            fail(f"text_program item {tid} source_reference_text_id does not exist in reference_text_geometry.json")
+        if str(item.get("editable_in", "")).lower() != "pptx":
+            fail(f"text_program item {tid} must render as editable PPTX text")
+        if "reference" not in str(item.get("reference_binding", "")).lower():
+            fail(f"text_program item {tid} must bind to a reference-derived text region")
+        try:
+            if float(item.get("font_size_pt", 0)) <= 0:
+                fail(f"text_program item {tid} font_size_pt must be positive")
+            if float(item.get("estimated_font_ratio", 0)) <= 0:
+                fail(f"text_program item {tid} estimated_font_ratio must be positive")
+        except (TypeError, ValueError):
+            fail(f"text_program item {tid} font fields must be numeric")
+    return len(items)
+
+
+def validate_text_alignment_report(path: Path) -> int:
+    data = read_json(path)
+    if not isinstance(data, dict):
+        fail("text_alignment_report.json must be a JSON object")
+    policy = str(data.get("policy", "")).lower()
+    if "fixed publication" in policy or "paper_double_column" in policy:
+        fail("text_alignment_report.json must check reference alignment, not fixed publication font thresholds")
+    if str(data.get("status", "")).lower() in {"fail", "failed", "blocked"}:
+        fail("text_alignment_report.json reports failed text alignment")
+    items = data.get("items")
+    if not isinstance(items, list) or not items:
+        fail("text_alignment_report.json must contain non-empty items")
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            fail(f"text_alignment_report item at index {index} must be an object")
+        tid = str(item.get("label_id") or index)
+        if str(item.get("editable_in", "")).lower() != "pptx":
+            fail(f"text_alignment_report item {tid} is not editable in PPTX")
+        if str(item.get("status", "")).lower() in {"fail", "failed", "blocked"}:
+            fail(f"text_alignment_report item {tid} failed reference alignment")
+        try:
+            if float(item.get("center_delta_percent", 0)) > 0.05:
+                fail(f"text_alignment_report item {tid} center drift exceeds reference tolerance")
+            if float(item.get("width_delta_percent", 0)) > 0.08:
+                fail(f"text_alignment_report item {tid} width drift exceeds reference tolerance")
+            if float(item.get("height_delta_percent", 0)) > 0.06:
+                fail(f"text_alignment_report item {tid} height drift exceeds reference tolerance")
+        except (TypeError, ValueError):
+            fail(f"text_alignment_report item {tid} delta fields must be numeric")
+        if not str(item.get("source_reference_text_id", "")).strip():
+            fail(f"text_alignment_report item {tid} missing source_reference_text_id")
+    return len(items)
 
 
 def validate_reference_style_profile(path: Path) -> None:
@@ -695,6 +915,29 @@ def validate_composition_quality(path: Path) -> int:
             fail(f"composition_quality_report slot {sid} missing numeric image_slot_area_fill_percent")
         if fill < 95:
             fail(f"composition_quality_report slot {sid} image_slot_area_fill_percent {fill:g} below 95")
+    arrows = data.get("arrows")
+    if not isinstance(arrows, list):
+        fail("composition_quality_report.json must contain arrows list")
+    for item in arrows:
+        if not isinstance(item, dict):
+            fail("composition_quality_report arrow entries must be objects")
+        aid = item.get("arrow_id")
+        if str(item.get("editable_in", "")).lower() != "pptx":
+            fail(f"composition_quality_report arrow {aid} must be editable in PPTX")
+        if str(item.get("render_policy", "")).lower() != "ppt_shape_not_image_asset":
+            fail(f"composition_quality_report arrow {aid} must render as a PPT shape")
+        if not str(item.get("route_style", "")).strip():
+            fail(f"composition_quality_report arrow {aid} missing route_style")
+        if not str(item.get("line_cap", "")).strip():
+            fail(f"composition_quality_report arrow {aid} missing line_cap")
+        if not str(item.get("routing_algorithm", "")).strip():
+            fail(f"composition_quality_report arrow {aid} missing routing_algorithm")
+        try:
+            segment_count = int(item.get("segment_count", 0))
+        except (TypeError, ValueError):
+            fail(f"composition_quality_report arrow {aid} missing numeric segment_count")
+        if segment_count < 1:
+            fail(f"composition_quality_report arrow {aid} rendered no connector segments")
     return len(slots)
 
 
@@ -740,12 +983,46 @@ def main(argv: list[str]) -> int:
     reference_geometry_count = validate_reference_geometry(reference_geometry)
     ok(f"Validated reference_geometry.json with {reference_geometry_count} slots")
 
+    reference_control_candidates = root / "reference_control_candidates.json"
+    if not reference_control_candidates.exists() or reference_control_candidates.stat().st_size == 0:
+        fail("Missing non-empty reference_control_candidates.json")
+    require_front_summary(reference_control_candidates)
+    candidate_count = validate_reference_control_candidates(reference_control_candidates, root)
+    ok(f"Validated reference_control_candidates.json with {candidate_count} candidates")
+
+    for overlay_name in ("slot_overlay.png", "reference_control_overlay.png"):
+        overlay = root / overlay_name
+        if not overlay.exists() or overlay.stat().st_size == 0:
+            fail(f"Missing non-empty {overlay_name}")
+        ok(f"Found {overlay_name}")
+
     reference_controls = root / "reference_controls.json"
     if not reference_controls.exists() or reference_controls.stat().st_size == 0:
         fail("Missing non-empty reference_controls.json")
     require_front_summary(reference_controls)
     controls_count = validate_reference_controls(reference_controls)
     ok(f"Validated reference_controls.json with {controls_count} controls")
+
+    arrow_style_profile = root / "arrow_style_profile.json"
+    if not arrow_style_profile.exists() or arrow_style_profile.stat().st_size == 0:
+        fail("Missing non-empty arrow_style_profile.json")
+    require_front_summary(arrow_style_profile)
+    validate_arrow_style_profile(arrow_style_profile)
+    ok("Validated arrow_style_profile.json")
+
+    selected_arrow_routes = root / "selected_arrow_routes.json"
+    if not selected_arrow_routes.exists() or selected_arrow_routes.stat().st_size == 0:
+        fail("Missing non-empty selected_arrow_routes.json")
+    require_front_summary(selected_arrow_routes)
+    route_count = validate_selected_arrow_routes(selected_arrow_routes)
+    ok(f"Validated selected_arrow_routes.json with {route_count} routes")
+
+    arrow_quality_report = root / "arrow_quality_report.json"
+    if not arrow_quality_report.exists() or arrow_quality_report.stat().st_size == 0:
+        fail("Missing non-empty arrow_quality_report.json")
+    require_front_summary(arrow_quality_report)
+    validate_arrow_quality_report(arrow_quality_report)
+    ok("Validated arrow_quality_report.json")
 
     slot_inventory = find_one(root, ("slot_inventory.json", "slot_inventory.md"))
     if not slot_inventory:
@@ -792,6 +1069,27 @@ def main(argv: list[str]) -> int:
     require_front_summary(figure_program)
     program_slot_count = validate_program(figure_program)
     ok(f"Validated figure_program.json with {program_slot_count} slots")
+
+    reference_text_geometry = root / "reference_text_geometry.json"
+    if not reference_text_geometry.exists() or reference_text_geometry.stat().st_size == 0:
+        fail("Missing non-empty reference_text_geometry.json")
+    require_front_summary(reference_text_geometry)
+    reference_text_ids = validate_reference_text_geometry(reference_text_geometry)
+    ok(f"Validated reference_text_geometry.json with {len(reference_text_ids)} text regions")
+
+    text_program = root / "text_program.json"
+    if not text_program.exists() or text_program.stat().st_size == 0:
+        fail("Missing non-empty text_program.json")
+    require_front_summary(text_program)
+    text_item_count = validate_text_program(text_program, reference_text_ids)
+    ok(f"Validated text_program.json with {text_item_count} editable text items")
+
+    text_alignment_report = root / "text_alignment_report.json"
+    if not text_alignment_report.exists() or text_alignment_report.stat().st_size == 0:
+        fail("Missing non-empty text_alignment_report.json")
+    require_front_summary(text_alignment_report)
+    text_alignment_count = validate_text_alignment_report(text_alignment_report)
+    ok(f"Validated text_alignment_report.json with {text_alignment_count} text alignment items")
 
     slot_visual_spec = root / "slot_visual_spec.json"
     if not slot_visual_spec.exists() or slot_visual_spec.stat().st_size == 0:
@@ -898,7 +1196,14 @@ def main(argv: list[str]) -> int:
         root / "asset_visual_review.json",
         root / "layout_plan.json",
         root / "reference_geometry.json",
+        root / "reference_control_candidates.json",
         root / "reference_controls.json",
+        root / "reference_text_geometry.json",
+        root / "text_program.json",
+        root / "text_alignment_report.json",
+        root / "arrow_style_profile.json",
+        root / "selected_arrow_routes.json",
+        root / "arrow_quality_report.json",
         root / "reference_style_profile.json",
         root / "composition_quality_report.json",
         root / "visual_critic_iter_0.json",

@@ -59,10 +59,21 @@ Do not preserve reference-image mistakes:
    - record each slot's exact canvas ratio from pixel geometry, target pixel
      size, visual density, safe area, and fit policy
    - produce a slot inventory table before generating image2 prompts
-   - write `reference_controls.json` with each arrow/control's `bbox_percent`,
-     `center_percent`, `width_percent`, `height_percent`, `source_id`,
-     `target_id`, `path_percent`, `style_token_id`, `editable_in: pptx`, and
+   - write `reference_control_candidates.json` as an AutoFigure-inspired
+     boxlib-like candidate layer for arrows, connector lines, dashed loops,
+     branch connectors, and transition symbols detected from the reference
+   - render `slot_overlay.png` and `reference_control_overlay.png`; the first
+     labels image slots, while the second labels control candidates as
+     `AR01`, `AR02`, and so on for human or VLM source-target binding
+   - write `reference_controls.json` with each bound arrow/control's
+     `bbox_percent`, `center_percent`, `width_percent`, `height_percent`,
+     `source_id`, `target_id`, `source_anchor`, `target_anchor`,
+     multi-point `path_percent`, `style_token_id`, `editable_in: pptx`, and
      `render_policy: ppt_shape_not_image_asset`
+   - write `arrow_style_profile.json`, `selected_arrow_routes.json`, and
+     `arrow_quality_report.json` before PPT compilation. This stage should
+     improve softness and visual variation with reference-derived styles, but
+     must not replace the reference image's source-target logic or locked paths
    - write `reference_style_profile.json` with reference-derived color tokens,
      style summary, illustration mode, line weight, shadows, corner radius,
      texture, icon detail level, visual density, and text policy
@@ -208,7 +219,9 @@ requires a scientific decision that is not in the paper:
 - regenerate the mismatching block with a tighter prompt
 - replace the block with a better candidate
 - move or resize blocks to match the reference structure
-- revise arrows or grouping boxes when flow direction is unclear
+   - revise arrows or grouping boxes when flow direction is unclear; use
+     arrow-only patches that update `arrow_id`, anchors, and `path_percent`,
+     never a full figure rewrite
 - regenerate blocks whose useful visual content occupies less than 80% of the
   image area, or is below the 88%-95% target without a documented reason
 - regenerate or pad-to-fit blocks whose canvas ratio differs from the target slot

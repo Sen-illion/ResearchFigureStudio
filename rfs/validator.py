@@ -7,12 +7,22 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
 REQUIRED = [
     "input_manifest.json",
     "reference_geometry.json",
+    "reference_control_candidates.json",
+    "slot_overlay.png",
+    "reference_control_overlay.png",
     "reference_controls.json",
+    "arrow_style_profile.json",
+    "selected_arrow_routes.json",
+    "arrow_quality_report.json",
     "slot_inventory.json",
     "reference_style_profile.json",
     "style_sheet.md",
     "layout_plan.json",
     "figure_program.json",
+    "reference_text_geometry.json",
+    "text_program.json",
+    "ocr_text_quality_report.json",
+    "text_alignment_report.json",
     "slot_visual_spec.json",
     "reference_slot_prompt_brief.json",
     "slot_prompt_plan.json",
@@ -146,6 +156,14 @@ def validate_output(out_dir: str | Path) -> dict:
         for item in geometry.get("controls", []):
             if isinstance(item, dict):
                 _validate_geometry_item(item, f"reference_geometry control {item.get('id')}", errors)
+                if not str(item.get("source_id", "")).strip():
+                    errors.append(f"reference_geometry control {item.get('id')} missing source_id")
+                if not str(item.get("target_id", "")).strip():
+                    errors.append(f"reference_geometry control {item.get('id')} missing target_id")
+                if not str(item.get("source_anchor", "")).strip():
+                    errors.append(f"reference_geometry control {item.get('id')} missing source_anchor")
+                if not str(item.get("target_anchor", "")).strip():
+                    errors.append(f"reference_geometry control {item.get('id')} missing target_anchor")
                 if str(item.get("render_policy", "")).lower() != "ppt_shape_not_image_asset":
                     errors.append(f"reference_geometry control {item.get('id')} must render as a PPT shape, not an image asset")
         palette = geometry.get("reference_palette", [])
@@ -157,21 +175,99 @@ def validate_output(out_dir: str | Path) -> dict:
         errors.append(f"Invalid reference_geometry.json: {exc}")
 
     try:
+        candidates_doc = json.loads((root / "reference_control_candidates.json").read_text(encoding="utf-8"))
+        if not str(candidates_doc.get("effective_mode", "")).strip():
+            errors.append("reference_control_candidates.json missing effective_mode")
+        if not isinstance(candidates_doc.get("candidates"), list):
+            errors.append("reference_control_candidates.json candidates must be a list")
+        if str(candidates_doc.get("slot_overlay_path", "")).strip() and not (root / str(candidates_doc.get("slot_overlay_path"))).exists():
+            errors.append("reference_control_candidates.json slot_overlay_path does not exist")
+        if str(candidates_doc.get("control_overlay_path", "")).strip() and not (root / str(candidates_doc.get("control_overlay_path"))).exists():
+            errors.append("reference_control_candidates.json control_overlay_path does not exist")
+        for item in candidates_doc.get("candidates", []) if isinstance(candidates_doc.get("candidates"), list) else []:
+            cid = item.get("id")
+            for key in ["bbox_percent", "center_percent", "width_percent", "height_percent", "path_percent", "editable_in", "render_policy"]:
+                if key not in item:
+                    errors.append(f"reference_control_candidates item {cid} missing {key}")
+            if _arrow_like_asset_id(item.get("asset_id")):
+                errors.append(f"reference_control_candidates item {cid} must not bind to an image asset")
+    except Exception as exc:
+        errors.append(f"Invalid reference_control_candidates.json: {exc}")
+
+    try:
         controls_doc = json.loads((root / "reference_controls.json").read_text(encoding="utf-8"))
         controls = controls_doc.get("controls", [])
         if not isinstance(controls, list):
             errors.append("reference_controls.json controls must be a list")
         for item in controls if isinstance(controls, list) else []:
             cid = item.get("id")
-            for key in ["bbox_percent", "center_percent", "width_percent", "height_percent", "source_id", "target_id", "path_percent", "style_token_id", "editable_in", "render_policy"]:
+            for key in ["bbox_percent", "center_percent", "width_percent", "height_percent", "source_id", "target_id", "source_anchor", "target_anchor", "path_percent", "style_token_id", "editable_in", "render_policy"]:
                 if key not in item:
                     errors.append(f"reference_controls item {cid} missing {key}")
+            if not str(item.get("source_id", "")).strip():
+                errors.append(f"reference_controls item {cid} missing non-empty source_id")
+            if not str(item.get("target_id", "")).strip():
+                errors.append(f"reference_controls item {cid} missing non-empty target_id")
+            if not isinstance(item.get("path_percent"), list) or len(item.get("path_percent", [])) < 2:
+                errors.append(f"reference_controls item {cid} must have at least 2 path_percent points")
             if str(item.get("editable_in", "")).lower() != "pptx":
                 errors.append(f"reference_controls item {cid} must be editable in PPTX")
             if str(item.get("render_policy", "")).lower() != "ppt_shape_not_image_asset":
                 errors.append(f"reference_controls item {cid} must use ppt_shape_not_image_asset")
     except Exception as exc:
         errors.append(f"Invalid reference_controls.json: {exc}")
+
+    try:
+        arrow_style = json.loads((root / "arrow_style_profile.json").read_text(encoding="utf-8"))
+        if str(arrow_style.get("reference_priority", "")).lower() != "reference_image_hard_constraint":
+            errors.append("arrow_style_profile.json must keep reference_image_hard_constraint")
+        if not isinstance(arrow_style.get("style_rules"), dict) or not arrow_style.get("style_rules"):
+            errors.append("arrow_style_profile.json must contain style_rules")
+        if "reference" not in str(arrow_style.get("routing_principle", "")).lower():
+            errors.append("arrow_style_profile.json routing_principle must explicitly preserve the reference image")
+        if not str(arrow_style.get("routing_algorithm", "")).strip():
+            errors.append("arrow_style_profile.json must record routing_algorithm")
+        if "fallback" not in str(arrow_style.get("fallback_routing_policy", "")).lower():
+            errors.append("arrow_style_profile.json must record fallback_routing_policy")
+    except Exception as exc:
+        errors.append(f"Invalid arrow_style_profile.json: {exc}")
+
+    try:
+        routes_doc = json.loads((root / "selected_arrow_routes.json").read_text(encoding="utf-8"))
+        routes = routes_doc.get("routes", [])
+        if not isinstance(routes, list):
+            errors.append("selected_arrow_routes.json routes must be a list")
+        for item in routes if isinstance(routes, list) else []:
+            rid = item.get("id")
+            for key in ["source_id", "target_id", "semantic_role", "route_style", "path_percent", "style_token_id", "stroke_width_pt", "arrowhead_size", "line_cap", "routing_algorithm", "route_generation_status"]:
+                if key not in item or not str(item.get(key, "")).strip():
+                    errors.append(f"selected_arrow_routes item {rid} missing {key}")
+            if item.get("reference_locked") and item.get("reference_path_preserved") is not True:
+                errors.append(f"selected_arrow_routes item {rid} overrides a locked reference path")
+            if not isinstance(item.get("path_percent"), list) or len(item.get("path_percent", [])) < 2:
+                errors.append(f"selected_arrow_routes item {rid} must have at least 2 path_percent points")
+            if str(item.get("route_generation_status", "")).lower() == "aesthetic_tunnel_adjusted":
+                if not isinstance(item.get("reference_original_path_percent"), list) or len(item.get("reference_original_path_percent", [])) < 2:
+                    errors.append(f"selected_arrow_routes item {rid} missing reference_original_path_percent for aesthetic adjustment")
+                if item.get("reference_tunnel_preserved") is not True:
+                    errors.append(f"selected_arrow_routes item {rid} left its reference tunnel")
+    except Exception as exc:
+        errors.append(f"Invalid selected_arrow_routes.json: {exc}")
+
+    try:
+        arrow_quality = json.loads((root / "arrow_quality_report.json").read_text(encoding="utf-8"))
+        if str(arrow_quality.get("status", "")).lower() in {"fail", "failed", "blocked"}:
+            errors.append("arrow_quality_report.json reports failed arrow quality")
+        if arrow_quality.get("reference_path_overrides"):
+            errors.append("arrow_quality_report.json contains reference_path_overrides")
+        if arrow_quality.get("reference_tunnel_violations"):
+            errors.append("arrow_quality_report.json contains reference_tunnel_violations")
+        if "total_crossing_count" not in arrow_quality:
+            errors.append("arrow_quality_report.json missing total_crossing_count")
+        if "average_aesthetic_score" not in arrow_quality:
+            errors.append("arrow_quality_report.json missing average_aesthetic_score")
+    except Exception as exc:
+        errors.append(f"Invalid arrow_quality_report.json: {exc}")
 
     try:
         style_profile = json.loads((root / "reference_style_profile.json").read_text(encoding="utf-8"))
@@ -260,23 +356,163 @@ def validate_output(out_dir: str | Path) -> dict:
                 errors.append(f"Arrow/control {arrow.get('id')} missing source_id")
             if not str(arrow.get("target_id") or arrow.get("target") or "").strip():
                 errors.append(f"Arrow/control {arrow.get('id')} missing target_id")
-            if not isinstance(arrow.get("path_percent"), list) or not arrow.get("path_percent"):
-                errors.append(f"Arrow/control {arrow.get('id')} missing path_percent")
+            if not isinstance(arrow.get("path_percent"), list) or len(arrow.get("path_percent", [])) < 2:
+                errors.append(f"Arrow/control {arrow.get('id')} must have at least 2 path_percent points")
+            if not str(arrow.get("source_anchor", "")).strip():
+                errors.append(f"Arrow/control {arrow.get('id')} missing source_anchor")
+            if not str(arrow.get("target_anchor", "")).strip():
+                errors.append(f"Arrow/control {arrow.get('id')} missing target_anchor")
             if not str(arrow.get("style_token_id", "")).strip():
                 errors.append(f"Arrow/control {arrow.get('id')} missing style_token_id")
             if str(arrow.get("render_policy", "")).lower() != "ppt_shape_not_image_asset":
                 errors.append(f"Arrow/control {arrow.get('id')} must render as PPT shape, not image asset")
+            if not str(arrow.get("semantic_role", "")).strip():
+                errors.append(f"Arrow/control {arrow.get('id')} missing semantic_role")
+            if not str(arrow.get("route_style", "")).strip():
+                errors.append(f"Arrow/control {arrow.get('id')} missing route_style")
+            if not str(arrow.get("routing_algorithm", "")).strip():
+                errors.append(f"Arrow/control {arrow.get('id')} missing routing_algorithm")
+            if not str(arrow.get("route_generation_status", "")).strip():
+                errors.append(f"Arrow/control {arrow.get('id')} missing route_generation_status")
+            if arrow.get("reference_locked") and arrow.get("reference_path_preserved") is not True:
+                errors.append(f"Arrow/control {arrow.get('id')} overrides a locked reference path")
         style = program.get("style", {}) if isinstance(program.get("style"), dict) else {}
         if not isinstance(style.get("color_tokens"), list) or not style.get("color_tokens"):
             errors.append("figure_program.json style must include color_tokens")
         if not str(style.get("reference_style_profile_path", "")).strip():
             errors.append("figure_program.json style must include reference_style_profile_path")
+        if not str(style.get("arrow_style_profile_path", "")).strip():
+            errors.append("figure_program.json style must include arrow_style_profile_path")
+        if not str(program.get("text_program_path", "")).strip():
+            errors.append("figure_program.json must include text_program_path")
+        if not str(program.get("reference_text_geometry_path", "")).strip():
+            errors.append("figure_program.json must include reference_text_geometry_path")
+        if not str(program.get("text_alignment_report_path", "")).strip():
+            errors.append("figure_program.json must include text_alignment_report_path")
+        text_program_inline = program.get("text_program")
+        if not isinstance(text_program_inline, dict) or not isinstance(text_program_inline.get("items"), list) or not text_program_inline.get("items"):
+            errors.append("figure_program.json must embed non-empty text_program items for PPT text rendering")
         palette = style.get("reference_palette") or style.get("palette") or []
         distinct = {str(c).upper() for c in palette if str(c).strip()}
         if len(distinct) < 4:
             errors.append("figure_program.json style must preserve reference-derived palette tokens, not a hardcoded fallback template")
+        token_ids = {str(item.get("token_id")) for item in style.get("color_tokens", []) if isinstance(item, dict)}
+        for arrow in program.get("arrows", []):
+            if str(arrow.get("style_token_id")) not in token_ids:
+                errors.append(f"Arrow/control {arrow.get('id')} style_token_id is not present in reference color_tokens")
     except Exception as exc:
         errors.append(f"Invalid figure_program.json: {exc}")
+
+    reference_text_ids: set[str] = set()
+    try:
+        text_geometry = json.loads((root / "reference_text_geometry.json").read_text(encoding="utf-8"))
+        if "publication" in str(text_geometry.get("policy", "")).lower() and "reference" not in str(text_geometry.get("policy", "")).lower():
+            errors.append("reference_text_geometry.json policy must be reference-first, not publication-scale-first")
+        regions = text_geometry.get("text_regions", [])
+        if not isinstance(regions, list) or not regions:
+            errors.append("reference_text_geometry.json must contain non-empty text_regions")
+        for item in regions if isinstance(regions, list) else []:
+            rid = str(item.get("id") or "")
+            reference_text_ids.add(rid)
+            for key in ["bbox_percent", "center_percent", "width_percent", "height_percent", "estimated_font_ratio", "color_hex", "role", "target_id"]:
+                if key not in item:
+                    errors.append(f"reference_text_geometry item {rid} missing {key}")
+            try:
+                if float(item.get("width_percent", 0)) <= 0 or float(item.get("height_percent", 0)) <= 0:
+                    errors.append(f"reference_text_geometry item {rid} has non-positive size")
+                if float(item.get("estimated_font_ratio", 0)) <= 0:
+                    errors.append(f"reference_text_geometry item {rid} has non-positive estimated_font_ratio")
+            except Exception:
+                errors.append(f"reference_text_geometry item {rid} size/font fields must be numeric")
+            if str(item.get("editable_in", "")).lower() != "pptx":
+                errors.append(f"reference_text_geometry item {rid} must be intended for editable PPTX text")
+            color = str(item.get("color_hex", ""))
+            if not color.startswith("#") or len(color.strip()) < 7:
+                errors.append(f"reference_text_geometry item {rid} must record reference color_hex")
+            if str(text_geometry.get("detection_mode", "")).lower() == "ocr":
+                if "confidence" not in item:
+                    errors.append(f"reference_text_geometry OCR item {rid} missing confidence")
+                if not str(item.get("raw_text", "")).strip():
+                    errors.append(f"reference_text_geometry OCR item {rid} missing raw_text")
+    except Exception as exc:
+        errors.append(f"Invalid reference_text_geometry.json: {exc}")
+
+    try:
+        ocr_report = json.loads((root / "ocr_text_quality_report.json").read_text(encoding="utf-8"))
+        if not str(ocr_report.get("mode", "")).strip():
+            errors.append("ocr_text_quality_report.json missing mode")
+        if not str(ocr_report.get("status", "")).strip():
+            errors.append("ocr_text_quality_report.json missing status")
+        if str(ocr_report.get("status", "")).lower() not in {"pass", "fallback", "not_run"}:
+            errors.append("ocr_text_quality_report.json status must be pass, fallback, or not_run")
+        if "text_region_count" not in ocr_report:
+            errors.append("ocr_text_quality_report.json missing text_region_count")
+    except Exception as exc:
+        errors.append(f"Invalid ocr_text_quality_report.json: {exc}")
+
+    try:
+        text_program = json.loads((root / "text_program.json").read_text(encoding="utf-8"))
+        policy = str(text_program.get("policy", "")).lower()
+        if "paper_double_column" in policy or "minimum_effective_font" in policy:
+            errors.append("text_program.json must not apply fixed publication-scale font thresholds by default")
+        items = text_program.get("items", [])
+        if not isinstance(items, list) or not items:
+            errors.append("text_program.json must contain non-empty items")
+        for item in items if isinstance(items, list) else []:
+            tid = str(item.get("id") or "")
+            for key in ["text", "role", "target_id", "source_reference_text_id", "reference_binding", "bbox_percent", "center_percent", "width_percent", "height_percent", "estimated_font_ratio", "font_size_pt", "color_hex", "editable_in"]:
+                if key not in item:
+                    errors.append(f"text_program item {tid} missing {key}")
+            for key in ["font_family_guess", "font_weight_guess", "fit_strategy"]:
+                if key not in item:
+                    errors.append(f"text_program item {tid} missing {key}")
+            source_id = str(item.get("source_reference_text_id") or "")
+            if source_id not in reference_text_ids:
+                errors.append(f"text_program item {tid} source_reference_text_id does not exist in reference_text_geometry.json")
+            if str(item.get("editable_in", "")).lower() != "pptx":
+                errors.append(f"text_program item {tid} must render as editable PPTX text")
+            try:
+                if float(item.get("font_size_pt", 0)) <= 0:
+                    errors.append(f"text_program item {tid} font_size_pt must be positive")
+                if float(item.get("estimated_font_ratio", 0)) <= 0:
+                    errors.append(f"text_program item {tid} estimated_font_ratio must be positive")
+            except Exception:
+                errors.append(f"text_program item {tid} font fields must be numeric")
+            binding = str(item.get("reference_binding", "")).lower()
+            if "reference" not in binding:
+                errors.append(f"text_program item {tid} must bind to a reference-derived text region")
+    except Exception as exc:
+        errors.append(f"Invalid text_program.json: {exc}")
+
+    try:
+        text_alignment = json.loads((root / "text_alignment_report.json").read_text(encoding="utf-8"))
+        policy = str(text_alignment.get("policy", "")).lower()
+        if "fixed publication" in policy or "paper_double_column" in policy:
+            errors.append("text_alignment_report.json must check reference alignment, not fixed publication font thresholds")
+        if str(text_alignment.get("status", "")).lower() in {"fail", "failed", "blocked"}:
+            errors.append("text_alignment_report.json reports failed text alignment")
+        items = text_alignment.get("items", [])
+        if not isinstance(items, list) or not items:
+            errors.append("text_alignment_report.json must contain non-empty items")
+        for item in items if isinstance(items, list) else []:
+            tid = str(item.get("label_id") or "")
+            if str(item.get("editable_in", "")).lower() != "pptx":
+                errors.append(f"text_alignment_report item {tid} is not editable in PPTX")
+            if str(item.get("status", "")).lower() in {"fail", "failed", "blocked"}:
+                errors.append(f"text_alignment_report item {tid} failed reference alignment")
+            try:
+                if float(item.get("center_delta_percent", 0)) > 0.05:
+                    errors.append(f"text_alignment_report item {tid} center drift exceeds reference tolerance")
+                if float(item.get("width_delta_percent", 0)) > 0.08:
+                    errors.append(f"text_alignment_report item {tid} width drift exceeds reference tolerance")
+                if float(item.get("height_delta_percent", 0)) > 0.06:
+                    errors.append(f"text_alignment_report item {tid} height drift exceeds reference tolerance")
+            except Exception:
+                errors.append(f"text_alignment_report item {tid} delta fields must be numeric")
+            if not str(item.get("source_reference_text_id", "")).strip():
+                errors.append(f"text_alignment_report item {tid} missing source_reference_text_id")
+    except Exception as exc:
+        errors.append(f"Invalid text_alignment_report.json: {exc}")
 
     try:
         visual_spec = json.loads((root / "slot_visual_spec.json").read_text(encoding="utf-8"))
@@ -428,6 +664,20 @@ def validate_output(out_dir: str | Path) -> dict:
             fill = float(item.get("image_slot_area_fill_percent", 0))
             if fill < 95:
                 errors.append(f"Composition slot {sid} image fills {fill}% of slot, below 95%")
+        for item in comp.get("arrows", []) if isinstance(comp.get("arrows"), list) else []:
+            aid = item.get("arrow_id")
+            if str(item.get("editable_in", "")).lower() != "pptx":
+                errors.append(f"Composition arrow {aid} is not editable in PPTX")
+            if str(item.get("render_policy", "")).lower() != "ppt_shape_not_image_asset":
+                errors.append(f"Composition arrow {aid} must render as a PPT shape")
+            if int(item.get("segment_count", 0)) < 1:
+                errors.append(f"Composition arrow {aid} rendered no connector segments")
+            if not str(item.get("route_style", "")).strip():
+                errors.append(f"Composition arrow {aid} missing route_style")
+            if not str(item.get("line_cap", "")).strip():
+                errors.append(f"Composition arrow {aid} missing line_cap")
+            if not str(item.get("routing_algorithm", "")).strip():
+                errors.append(f"Composition arrow {aid} missing routing_algorithm")
     except Exception as exc:
         errors.append(f"Invalid composition_quality_report.json: {exc}")
 
@@ -453,7 +703,7 @@ def validate_output(out_dir: str | Path) -> dict:
         errors.append(f"Too few generated assets: {asset_count}")
 
     text_blob = ""
-    for name in ["prompts.md", "style_sheet.md", "reference_style_profile.json", "figure_program.json", "reference_geometry.json", "reference_controls.json", "slot_visual_spec.json", "reference_slot_prompt_brief.json", "slot_prompt_plan.json", "asset_quality_report.json", "asset_complexity_report.json", "composition_quality_report.json", "asset_visual_review.json", "alignment_review.md", "critic_report.md", "visual_critic_iter_0.json"]:
+    for name in ["prompts.md", "style_sheet.md", "reference_style_profile.json", "arrow_style_profile.json", "selected_arrow_routes.json", "arrow_quality_report.json", "figure_program.json", "reference_geometry.json", "reference_controls.json", "reference_text_geometry.json", "text_program.json", "ocr_text_quality_report.json", "text_alignment_report.json", "slot_visual_spec.json", "reference_slot_prompt_brief.json", "slot_prompt_plan.json", "asset_quality_report.json", "asset_complexity_report.json", "composition_quality_report.json", "asset_visual_review.json", "alignment_review.md", "critic_report.md", "visual_critic_iter_0.json"]:
         path = root / name
         if path.exists():
             text_blob += "\n" + path.read_text(encoding="utf-8", errors="ignore").lower()
