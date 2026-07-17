@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .coevolution import analyze_coevolution_run, run_image_coevolution
 from .presentations_qa import run_presentations_qa
 from .utils import env_present, mask_secret
 from .validator import validate_output
@@ -40,6 +41,9 @@ def _doctor() -> dict:
         "IMAGE_MODEL": {"present": env_present("IMAGE_MODEL"), "value": os.getenv("IMAGE_MODEL") if env_present("IMAGE_MODEL") else None},
         "RFS_LOCATOR_MODEL": {"present": env_present("RFS_LOCATOR_MODEL"), "value": os.getenv("RFS_LOCATOR_MODEL") if env_present("RFS_LOCATOR_MODEL") else None},
         "RFS_PROMPT_PLANNER_MODEL": {"present": env_present("RFS_PROMPT_PLANNER_MODEL"), "value": os.getenv("RFS_PROMPT_PLANNER_MODEL") if env_present("RFS_PROMPT_PLANNER_MODEL") else None},
+        "RFS_ONLINE_JUDGE_MODEL": {"present": env_present("RFS_ONLINE_JUDGE_MODEL"), "value": os.getenv("RFS_ONLINE_JUDGE_MODEL") if env_present("RFS_ONLINE_JUDGE_MODEL") else None},
+        "RFS_FROZEN_JUDGE_MODEL": {"present": env_present("RFS_FROZEN_JUDGE_MODEL"), "value": os.getenv("RFS_FROZEN_JUDGE_MODEL") if env_present("RFS_FROZEN_JUDGE_MODEL") else None},
+        "RFS_IMAGE_EDIT_URL": {"present": env_present("RFS_IMAGE_EDIT_URL"), "value": os.getenv("RFS_IMAGE_EDIT_URL") if env_present("RFS_IMAGE_EDIT_URL") else None},
         "MODEL_VLM": {"present": env_present("MODEL_VLM"), "value": os.getenv("MODEL_VLM") if env_present("MODEL_VLM") else None},
     }
     ok = all(item["available"] for item in deps.values())
@@ -60,6 +64,7 @@ def _doctor() -> dict:
             "Use --asset-mode image2 for Yunwu OpenAI-compatible image generation; logical image-2 maps to gpt-image-2 unless RFS_IMAGE_MODEL overrides it.",
             "Use --asset-mode placeholder for offline engineering validation only.",
             "Use rfs presentations-qa as an optional inspection pass; RFS remains the authoritative PPTX compiler.",
+            "Use rfs coevolve-image to run whole-image Creator Agent and Online/Frozen Judge refinement before PPTX conversion.",
         ],
     }
 
@@ -104,6 +109,22 @@ def build_parser() -> argparse.ArgumentParser:
     make.add_argument("--no-export", action="store_true", help="Skip PDF/PNG export and only create PPTX/artifacts.")
     make.add_argument("--json", action="store_true", help="Emit JSON.")
 
+    coevolve = sub.add_parser("coevolve-image", help="Refine a complete scientific image through Creator Agent and Online/Frozen Judges.")
+    coevolve.add_argument("--ground-truth", required=True, help="Structured Ground Truth JSON containing paper facts and human aesthetic preferences.")
+    coevolve.add_argument("--out", required=True, help="Output directory for rounds, training trajectories, and approved_image.png.")
+    coevolve.add_argument("--candidates", type=int, default=3, help="Initial whole-image candidate count. Default: 3.")
+    coevolve.add_argument("--repair-candidates", type=int, default=2, help="Candidate count for each repair round. Default: 2.")
+    coevolve.add_argument("--max-rounds", type=int, default=4, help="Maximum total rounds including initial generation. Default: 4.")
+    coevolve.add_argument("--online-judge-model", help="Online feedback Judge model. Defaults to RFS_ONLINE_JUDGE_MODEL/RFS_CRITIC_MODEL/MODEL_VLM.")
+    coevolve.add_argument("--frozen-judge-model", help="Independent acceptance Judge model. Defaults to RFS_FROZEN_JUDGE_MODEL/RFS_CRITIC_MODEL/MODEL_VLM.")
+    coevolve.add_argument("--image-model", help="Whole-image generation model. Defaults to RFS_IMAGE_MODEL/IMAGE_MODEL.")
+    coevolve.add_argument("--image-retries", type=int, default=2, help="Image request retries. Default: 2.")
+    coevolve.add_argument("--json", action="store_true", help="Emit JSON.")
+
+    coevolution_report = sub.add_parser("coevolution-report", help="Aggregate a co-evolution run into reproducible improvement metrics.")
+    coevolution_report.add_argument("--run", required=True, help="Existing co-evolution output directory.")
+    coevolution_report.add_argument("--json", action="store_true", help="Emit JSON.")
+
     validate = sub.add_parser("validate", help="Validate an existing ResearchFigureStudio output directory.")
     validate.add_argument("--out", required=True, help="Output directory to validate.")
     validate.add_argument("--json", action="store_true", help="Emit JSON.")
@@ -121,7 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _print_human(data: dict) -> None:
     if "ok" in data:
         print(f"ok: {data['ok']}")
-    for key in ["out_dir", "pptx", "pdf", "png", "asset_count", "slot_count", "slot_source", "asset_mode", "candidates_per_slot", "asset_workers", "asset_retries", "asset_review_mode", "locator_mode", "control_localizer_mode", "arrow_style_mode", "prompt_plan_mode", "prompt_plan_workers", "complexity_profile", "critic_mode", "critic_iterations", "text_extractor_mode", "ocr_engine", "ocr_lang"]:
+    for key in ["out_dir", "approved_image", "thresholds_met", "stop_reason", "rounds_completed", "online_judge_model", "frozen_judge_model", "weak_judge_isolation", "pptx", "pdf", "png", "asset_count", "slot_count", "slot_source", "asset_mode", "candidates_per_slot", "asset_workers", "asset_retries", "asset_review_mode", "locator_mode", "control_localizer_mode", "arrow_style_mode", "prompt_plan_mode", "prompt_plan_workers", "complexity_profile", "critic_mode", "critic_iterations", "text_extractor_mode", "ocr_engine", "ocr_lang"]:
         if key in data:
             print(f"{key}: {data[key]}")
     if data.get("presentations_qa"):
@@ -187,6 +208,20 @@ def main(argv: list[str] | None = None) -> int:
                 presentations_scale=args.presentations_scale,
                 export=not args.no_export,
             )
+        elif args.command == "coevolve-image":
+            result = run_image_coevolution(
+                ground_truth_path=args.ground_truth,
+                out_dir=args.out,
+                candidates=args.candidates,
+                repair_candidates=args.repair_candidates,
+                max_rounds=args.max_rounds,
+                online_judge_model=args.online_judge_model,
+                frozen_judge_model=args.frozen_judge_model,
+                image_model=args.image_model,
+                image_retries=args.image_retries,
+            )
+        elif args.command == "coevolution-report":
+            result = analyze_coevolution_run(args.run)
         elif args.command == "validate":
             result = validate_output(args.out)
         elif args.command == "presentations-qa":
