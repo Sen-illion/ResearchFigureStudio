@@ -17,6 +17,10 @@ research_figure_studio.egg-info/
 .env
 .env.*
 *.env
+.venv/
+venv/
+env/
+tmp/translation_env/
 *.key
 *.pem
 

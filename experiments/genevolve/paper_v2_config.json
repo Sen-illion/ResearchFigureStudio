@@ -1,0 +1,102 @@
+{
+  "paper": {
+    "title": "GenEvolve: Self-Evolving Image Generation Agents via Tool-Orchestrated Visual Experience Distillation",
+    "arxiv": "2605.21605v2",
+    "date": "2026-05-22",
+    "project_url": "https://ephemeral182.github.io/GenEvolve/"
+  },
+  "agent": {
+    "backbone": "Qwen3-VL-8B-Instruct",
+    "tools": ["search", "image_search", "query_knowledge"],
+    "skills": ["text", "layout", "body", "style", "bind", "create", "physics", "count"],
+    "max_llm_calls_per_run": 11,
+    "max_reference_images": 2
+  },
+  "data": {
+    "prompt_pool": 19990,
+    "knowledge_anchored": 11999,
+    "quality_anchored": 7991,
+    "sft_train": 8800,
+    "sft_held_out": 200,
+    "filtered_gt_images": 3175,
+    "self_evolution_pool": 2575,
+    "self_evolution_optimization": 2446,
+    "self_evolution_validation": 129,
+    "benchmark_approx": 600
+  },
+  "sft": {
+    "framework": "LLaMA-Factory",
+    "trainable_part": "language-policy parameters",
+    "freeze_vision_tower": true,
+    "freeze_multi_modal_projector": true,
+    "cutoff_len": 32768,
+    "learning_rate": 1e-5,
+    "weight_decay": 1e-6,
+    "warmup_ratio": 0.02,
+    "epochs": 2,
+    "gpus": 16,
+    "micro_batch_size": 2,
+    "gradient_accumulation": 1,
+    "global_batch_size": 32,
+    "precision": "bf16",
+    "attention": "FlashAttention-2",
+    "deepspeed": "ZeRO-3",
+    "loss_mask": "assistant tokens only"
+  },
+  "self_evolution": {
+    "framework": "rLLM/verl",
+    "rollout_backend": "SGLang",
+    "gpus": 8,
+    "prompts_per_step": 8,
+    "rollouts_per_prompt": 6,
+    "temperature": 0.7,
+    "top_p": 0.95,
+    "top_k": -1,
+    "max_prompt_tokens": 6144,
+    "max_response_tokens": 30000,
+    "actor_learning_rate": 1e-6,
+    "clip_low": 0.2,
+    "clip_high": 0.28,
+    "kl_coefficient": 0.001
+  },
+  "reward": {
+    "image_judge": "Gemini 3.1 Pro Preview",
+    "text_judge": "Gemini 3.1 Pro Preview",
+    "image_weight": 0.5,
+    "text_weight": 0.5,
+    "kscore_weights": {
+      "faithfulness": 0.1,
+      "visual_correctness": 0.4,
+      "text_accuracy": 0.4,
+      "aesthetics": 0.1
+    },
+    "text_score_bins": [0, 0.25, 0.5, 0.75, 1]
+  },
+  "experience": {
+    "summarizer": "Gemini 3.1 Pro Preview",
+    "slots": ["search", "knowledge", "reference", "prompt", "failure"],
+    "min_reward_gap": 0.2,
+    "max_comparisons_per_step": 8,
+    "buffer_capacity": 500,
+    "embedder": "Qwen3-Embedding-0.6B",
+    "retrieval_similarity_threshold": 0.84
+  },
+  "sdl": {
+    "coefficient": 2.0,
+    "importance_ratio_cap": 2.0,
+    "top_k_token_fraction": 0.1,
+    "teacher_context": "plain context plus retrieved experience",
+    "student_context": "plain inference context",
+    "teacher_detached": true
+  },
+  "evaluation": {
+    "benchmarks": ["GenEvolve-Bench", "WISE"],
+    "main_ablations": [
+      "raw generator",
+      "untuned workflow",
+      "SFT only",
+      "SFT + GRPO without visual experience",
+      "full GenEvolve"
+    ]
+  }
+}

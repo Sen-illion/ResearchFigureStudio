@@ -168,6 +168,17 @@ Optional Presentations-plugin QA can run after validation:
 editable_composition.pptx -> rfs presentations-qa -> presentations_plugin_qa_report.json/.md
 ```
 
+Optional whole-image Creator/Judge refinement can run before conversion:
+
+```text
+structured Ground Truth -> Creator Agent candidates -> Online Judge repair feedback ->
+Frozen Judge acceptance -> approved_image.png -> existing editable PPTX workflow
+```
+
+See [docs/coevolution.md](docs/coevolution.md) for the `rfs coevolve-image` command and Ground Truth contract.
+The long-term data, training, evaluation, rollout, and Creator-coordination plan is maintained in [docs/judge_model_training_roadmap.md](docs/judge_model_training_roadmap.md).
+User content hierarchy, emphasis, aesthetic, reference-image, and A/B preference criteria can be collected with [docs/aesthetic_ground_truth_questionnaire.md](docs/aesthetic_ground_truth_questionnaire.md).
+
 Key rules:
 
 - The reference image is the source of truth for layout, local visual object choice, color, visual rhythm, and arrow logic when `--slot-source reference-primary` is used.
