@@ -65,6 +65,8 @@ class TextLayerOcrTests(unittest.TestCase):
             self.assertEqual(len(text_program["items"]), 1)
             self.assertEqual(text_program["items"][0]["text"], "Detected Title")
             self.assertEqual(text_program["items"][0]["fit_strategy"], "ocr_bbox_exact")
+            self.assertEqual(text_program["items"][0]["estimated_font_ratio"], 0.108)
+            self.assertEqual(text_program["items"][0]["font_size_pt"], 38.88)
             self.assertEqual(program["text_program"]["items"][0]["font_family_guess"], "Arial")
 
     def test_ocr_unavailable_falls_back_to_heuristic_text_layer(self):

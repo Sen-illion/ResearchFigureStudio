@@ -8,6 +8,7 @@ from PIL import Image
 
 
 OCR_LOW_CONFIDENCE = 0.65
+OCR_TEXT_SIZE_COEFFICIENT = 0.9
 
 
 def _round4(value: float) -> float:
@@ -183,7 +184,7 @@ def _record_to_region(record: dict[str, Any], image: Image.Image, program: dict,
     confidence = float(record.get("confidence") or 0.0)
     color_hex, color_status = _sample_text_color(image, bbox)
     role, target_id = _nearest_target(bbox, program)
-    font_size = max(1.0, float(bbox["h"]) * canvas_height_in * 72 * 1.0)
+    font_size = max(1.0, float(bbox["h"]) * canvas_height_in * 72 * OCR_TEXT_SIZE_COEFFICIENT)
     return {
         "id": f"ref_text_ocr_{index:03d}",
         "text": text,
@@ -196,7 +197,7 @@ def _record_to_region(record: dict[str, Any], image: Image.Image, program: dict,
         "center_percent": _bbox_center(bbox),
         "width_percent": _round4(bbox["w"]),
         "height_percent": _round4(bbox["h"]),
-        "estimated_font_ratio": _round4(float(bbox["h"]) * 1.0),
+        "estimated_font_ratio": _round4(float(bbox["h"]) * OCR_TEXT_SIZE_COEFFICIENT),
         "font_size_pt": round(font_size, 2),
         "font_family_guess": _font_family_guess(text),
         "font_weight_guess": "bold" if role == "panel_title" and float(bbox["h"]) > 0.025 else "regular",
