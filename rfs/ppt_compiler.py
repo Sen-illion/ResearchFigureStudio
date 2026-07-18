@@ -14,6 +14,9 @@ from pptx.util import Inches, Pt
 from .utils import pct_to_inches, write_json
 
 
+TEXTBOX_WIDTH_SCALE = 1.5
+
+
 def _rgb(hex_color: str) -> RGBColor:
     value = hex_color.strip().lstrip("#") or "000000"
     return RGBColor(int(value[:2], 16), int(value[2:4], 16), int(value[4:6], 16))
@@ -68,6 +71,14 @@ def _add_label(slide, text: str, x: float, y: float, w: float, h: float, font_si
     box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
     _set_text(box, text, font_size=font_size, bold=bold, color=color, align=align, font_family=font_family)
     return box
+
+
+def _scale_textbox_width(x: float, w: float, canvas_w: float, scale: float = TEXTBOX_WIDTH_SCALE) -> tuple[float, float]:
+    scaled_w = min(canvas_w, max(0.01, w * scale))
+    center_x = x + w / 2
+    scaled_x = center_x - scaled_w / 2
+    scaled_x = max(0.0, min(scaled_x, canvas_w - scaled_w))
+    return scaled_x, scaled_w
 
 
 def _add_title_block(slide, program: dict, width_in: float, height_in: float) -> None:
@@ -462,12 +473,13 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
         if not isinstance(bbox, dict):
             continue
         x, y, w, h = pct_to_inches(bbox, width_in, height_in)
+        render_x, render_w = _scale_textbox_width(x, w, width_in)
         _add_label(
             slide,
             str(item.get("text") or ""),
-            x,
+            render_x,
             y,
-            w,
+            render_w,
             h,
             font_size=float(item.get("font_size_pt") or 6),
             bold=bool(item.get("bold")),
@@ -481,6 +493,13 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
             "target_id": item.get("target_id"),
             "source_reference_text_id": item.get("source_reference_text_id"),
             "bbox_percent": item.get("bbox_percent"),
+            "rendered_bbox_percent": {
+                "x": round(render_x / max(width_in, 0.001), 4),
+                "y": round(y / max(height_in, 0.001), 4),
+                "w": round(render_w / max(width_in, 0.001), 4),
+                "h": round(h / max(height_in, 0.001), 4),
+            },
+            "textbox_width_scale": TEXTBOX_WIDTH_SCALE,
             "font_size_pt": item.get("font_size_pt"),
             "color_hex": item.get("color_hex"),
             "font_family_guess": item.get("font_family_guess"),
