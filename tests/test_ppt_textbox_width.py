@@ -8,7 +8,7 @@ from rfs.ppt_compiler import compile_ppt
 
 
 class PptTextboxWidthTests(unittest.TestCase):
-    def test_text_program_textbox_width_is_scaled_by_one_point_five(self):
+    def test_text_program_textbox_width_is_scaled_by_one_point_six(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             program = {
@@ -42,9 +42,9 @@ class PptTextboxWidthTests(unittest.TestCase):
             report = json.loads((out / "composition_quality_report.json").read_text(encoding="utf-8"))
 
             self.assertEqual(report["text"][0]["bbox_percent"]["w"], 0.20)
-            self.assertEqual(report["text"][0]["rendered_bbox_percent"]["w"], 0.30)
-            self.assertEqual(report["text"][0]["rendered_bbox_percent"]["x"], 0.25)
-            self.assertEqual(report["text"][0]["textbox_width_scale"], 1.5)
+            self.assertEqual(report["text"][0]["rendered_bbox_percent"]["w"], 0.32)
+            self.assertEqual(report["text"][0]["rendered_bbox_percent"]["x"], 0.24)
+            self.assertEqual(report["text"][0]["textbox_width_scale"], 1.6)
 
             with zipfile.ZipFile(pptx) as archive:
                 slide_xml = archive.read("ppt/slides/slide1.xml").decode("utf-8")

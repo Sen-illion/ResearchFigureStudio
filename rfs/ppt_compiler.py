@@ -14,7 +14,7 @@ from pptx.util import Inches, Pt
 from .utils import pct_to_inches, write_json
 
 
-TEXTBOX_WIDTH_SCALE = 1.5
+TEXTBOX_WIDTH_SCALE = 1.6
 
 
 def _rgb(hex_color: str) -> RGBColor:
