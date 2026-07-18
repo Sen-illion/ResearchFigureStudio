@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from statistics import median
 from typing import Callable
 
 from PIL import Image
 
 from .reference_text_extractor import extract_reference_text
-from .utils import write_json
+from .text_role_classifier import classify_text_roles
+from .utils import write_json, write_text
 
 
 def _bbox_center(bbox: dict) -> dict:
@@ -28,16 +30,19 @@ def _clamp_bbox(bbox: dict) -> dict:
 
 def _region_record(region_id: str, text: str, role: str, bbox: dict, color_hex: str, source: str, target_id: str) -> dict:
     bbox = _clamp_bbox(bbox)
+    estimated_font_ratio = round(float(bbox["h"]) * 0.62, 5)
     return {
         "id": region_id,
         "text": text,
         "role": role,
+        "ocr_role_guess": role,
         "target_id": target_id,
         "bbox_percent": bbox,
         "center_percent": _bbox_center(bbox),
         "width_percent": round(float(bbox["w"]), 4),
         "height_percent": round(float(bbox["h"]), 4),
-        "estimated_font_ratio": round(float(bbox["h"]) * 0.62, 5),
+        "estimated_font_ratio": estimated_font_ratio,
+        "raw_estimated_font_ratio": estimated_font_ratio,
         "color_hex": color_hex,
         "source": source,
         "editable_in": "pptx",
@@ -208,6 +213,171 @@ def _font_pt_from_reference_region(region: dict, canvas_height_in: float) -> flo
     return round(max(1.0, float(region["height_percent"]) * canvas_height_in * 72 * multiplier), 2)
 
 
+def _ensure_raw_text_size(region: dict, canvas_height_in: float) -> None:
+    region.setdefault("ocr_role_guess", region.get("role"))
+    if region.get("raw_font_size_pt") is None:
+        region["raw_font_size_pt"] = float(region.get("font_size_pt") or _font_pt_from_reference_region(region, canvas_height_in))
+    if region.get("raw_estimated_font_ratio") is None:
+        region["raw_estimated_font_ratio"] = round(float(region["raw_font_size_pt"]) / max(canvas_height_in * 72, 0.001), 5)
+
+
+def _apply_text_role_classification(regions: list[dict], role_report: dict) -> None:
+    by_id = {
+        str(item.get("text_id") or ""): item
+        for item in role_report.get("items", [])
+        if isinstance(item, dict)
+    }
+    for region in regions:
+        item = by_id.get(str(region.get("id") or ""))
+        if not item:
+            region.setdefault("ocr_role_guess", region.get("role"))
+            region.setdefault("vlm_role", None)
+            region.setdefault("vlm_size_class", None)
+            region.setdefault("vlm_hierarchy_level", None)
+            region.setdefault("text_role_source", "heuristic")
+            continue
+        region["ocr_role_guess"] = item.get("ocr_role_guess") or region.get("ocr_role_guess") or region.get("role")
+        region["role"] = item.get("role") or region.get("role")
+        region["vlm_role"] = item.get("vlm_role")
+        region["vlm_size_class"] = item.get("vlm_size_class")
+        region["vlm_hierarchy_level"] = item.get("vlm_hierarchy_level")
+        region["text_role_source"] = item.get("source")
+        region["text_role_fallback_reason"] = item.get("fallback_reason")
+        region["hierarchy_level"] = item.get("hierarchy_level")
+        region["size_class"] = item.get("size_class")
+        region["text_size_group_hint"] = item.get("group_hint")
+
+
+def _cluster_key(region: dict) -> tuple[str, str, str]:
+    group_hint = str(region.get("text_size_group_hint") or "").strip()
+    if group_hint:
+        return ("hint", group_hint, "")
+    return (
+        str(region.get("role") or "free_text"),
+        str(region.get("hierarchy_level") or "body"),
+        str(region.get("size_class") or "medium"),
+    )
+
+
+def _raw_ratio(region: dict) -> float:
+    try:
+        return max(0.00001, float(region.get("raw_estimated_font_ratio") or region.get("estimated_font_ratio") or 0.0))
+    except Exception:
+        return 0.00001
+
+
+def _split_size_group(group: list[dict]) -> list[list[dict]]:
+    ordered = sorted(group, key=_raw_ratio)
+    clusters: list[list[dict]] = []
+    for region in ordered:
+        if not clusters:
+            clusters.append([region])
+            continue
+        current = clusters[-1]
+        current_median = median(_raw_ratio(item) for item in current)
+        threshold = max(0.003, current_median * 0.18)
+        if abs(_raw_ratio(region) - current_median) <= threshold:
+            current.append(region)
+        else:
+            clusters.append([region])
+    return clusters
+
+
+def _normalize_text_sizes(regions: list[dict], canvas_height_in: float, role_report: dict) -> tuple[list[dict], dict]:
+    grouped: dict[tuple[str, str, str], list[dict]] = {}
+    for region in regions:
+        grouped.setdefault(_cluster_key(region), []).append(region)
+
+    raw_levels: list[tuple[float, tuple[str, str, str], list[dict]]] = []
+    for key, group in grouped.items():
+        for cluster in _split_size_group(group):
+            level_ratio = float(median(_raw_ratio(item) for item in cluster))
+            raw_levels.append((level_ratio, key, cluster))
+
+    text_size_levels: list[dict] = []
+    decision_items: list[dict] = []
+    for index, (level_ratio, key, cluster) in enumerate(sorted(raw_levels, key=lambda item: (item[0], str(item[1]))), start=1):
+        level_id = f"text_size_level_{index:02d}"
+        font_size = round(max(1.0, level_ratio * canvas_height_in * 72), 2)
+        level = {
+            "id": level_id,
+            "group_key": ":".join(part for part in key if part),
+            "median_estimated_font_ratio": round(level_ratio, 5),
+            "font_size_pt": font_size,
+            "region_count": len(cluster),
+            "text_ids": [str(item.get("id") or "") for item in cluster],
+            "role_values": sorted({str(item.get("role") or "") for item in cluster if item.get("role")}),
+            "size_class_values": sorted({str(item.get("size_class") or "") for item in cluster if item.get("size_class")}),
+        }
+        text_size_levels.append(level)
+        for region in cluster:
+            raw_font = round(float(region.get("raw_font_size_pt") or _raw_ratio(region) * canvas_height_in * 72), 2)
+            region["text_size_level_id"] = level_id
+            region["estimated_font_ratio"] = round(level_ratio, 5)
+            region["font_size_pt"] = font_size
+            decision_items.append({
+                "text_id": region.get("id"),
+                "text": region.get("text"),
+                "ocr_role_guess": region.get("ocr_role_guess"),
+                "final_role": region.get("role"),
+                "vlm_role": region.get("vlm_role"),
+                "vlm_hierarchy_level": region.get("vlm_hierarchy_level"),
+                "vlm_size_class": region.get("vlm_size_class"),
+                "text_role_source": region.get("text_role_source"),
+                "fallback_reason": region.get("text_role_fallback_reason"),
+                "raw_estimated_font_ratio": round(_raw_ratio(region), 5),
+                "raw_font_size_pt": raw_font,
+                "text_size_level_id": level_id,
+                "final_estimated_font_ratio": round(level_ratio, 5),
+                "final_font_size_pt": font_size,
+            })
+
+    report = {
+        "summary": "OCR text size normalization report using role-aware median clusters.",
+        "status": "pass",
+        "method": "role_aware_median_cluster",
+        "text_role_mode": role_report.get("mode"),
+        "text_role_status": role_report.get("status"),
+        "text_region_count": len(regions),
+        "level_count": len(text_size_levels),
+        "text_size_levels": text_size_levels,
+        "items": sorted(decision_items, key=lambda item: str(item.get("text_id") or "")),
+    }
+    return text_size_levels, report
+
+
+def _escape_md(value: object) -> str:
+    return str(value if value is not None else "").replace("|", "\\|").replace("\n", " ")
+
+
+def _write_text_size_decisions(out: Path, report: dict) -> None:
+    lines = [
+        "# Summary",
+        "OCR, VLM role classification, and final median-cluster font-size decisions.",
+        "",
+        "| Text ID | Text | OCR role | VLM role | VLM class | Source | Level | Raw pt | Final pt |",
+        "| --- | --- | --- | --- | --- | --- | --- | ---: | ---: |",
+    ]
+    for item in report.get("items", []):
+        lines.append(
+            "| "
+            + " | ".join([
+                _escape_md(item.get("text_id")),
+                _escape_md(item.get("text")),
+                _escape_md(item.get("ocr_role_guess")),
+                _escape_md(item.get("vlm_role")),
+                _escape_md(item.get("vlm_size_class")),
+                _escape_md(item.get("text_role_source")),
+                _escape_md(item.get("text_size_level_id")),
+                _escape_md(item.get("raw_font_size_pt")),
+                _escape_md(item.get("final_font_size_pt")),
+            ])
+            + " |"
+        )
+    write_json(out / "text_size_normalization_report.json", report)
+    write_text(out / "text_size_decisions.md", "\n".join(lines) + "\n")
+
+
 def _alignment_item(item: dict, region: dict) -> dict:
     ib = item["bbox_percent"]
     rb = region["bbox_percent"]
@@ -336,6 +506,9 @@ def build_text_layer(
     ocr_engine: str = "paddle",
     ocr_lang: str = "en_ch",
     ocr_adapter: Callable[[str | Path, str], list[dict]] | None = None,
+    text_role_mode: str = "heuristic",
+    text_role_model: str | None = None,
+    text_role_adapter: Callable[[str | Path, list[dict], dict, str | None], dict] | None = None,
 ) -> dict:
     """Build reference-first editable text artifacts and attach them to the program."""
 
@@ -358,6 +531,26 @@ def build_text_layer(
         ocr_report.setdefault("warnings", [])
         ocr_report["warnings"].append("using_heuristic_text_layer_fallback")
 
+    for region in regions:
+        _ensure_raw_text_size(region, canvas_height_in)
+    role_report = classify_text_roles(
+        reference_path,
+        regions,
+        program,
+        mode=text_role_mode,
+        model=text_role_model,
+        adapter=text_role_adapter,
+    )
+    _apply_text_role_classification(regions, role_report)
+    text_size_levels, text_size_report = _normalize_text_sizes(regions, canvas_height_in, role_report)
+    ocr_report["text_size_normalization"] = {
+        "enabled": True,
+        "method": "role_aware_median_cluster",
+        "level_count": len(text_size_levels),
+        "text_role_mode": text_role_mode,
+        "text_role_status": role_report.get("status"),
+    }
+
     items: list[dict] = []
     for region in regions:
         font_size = float(region.get("font_size_pt") or _font_pt_from_reference_region(region, canvas_height_in))
@@ -375,6 +568,15 @@ def build_text_layer(
             "height_percent": region["height_percent"],
             "estimated_font_ratio": region["estimated_font_ratio"],
             "font_size_pt": font_size,
+            "text_size_level_id": region.get("text_size_level_id"),
+            "raw_estimated_font_ratio": region.get("raw_estimated_font_ratio"),
+            "raw_font_size_pt": region.get("raw_font_size_pt"),
+            "ocr_role_guess": region.get("ocr_role_guess"),
+            "vlm_role": region.get("vlm_role"),
+            "vlm_size_class": region.get("vlm_size_class"),
+            "vlm_hierarchy_level": region.get("vlm_hierarchy_level"),
+            "text_role_source": region.get("text_role_source"),
+            "text_role_fallback_reason": region.get("text_role_fallback_reason"),
             "color_hex": region["color_hex"],
             "color_token_id": token_id,
             "bold": str(region.get("font_weight_guess") or "").lower() == "bold" or region["role"] in {"panel_title", "method_label", "modality_label"},
@@ -395,6 +597,10 @@ def build_text_layer(
         "detection_mode": "ocr" if ocr_regions else "reference_geometry_and_local_color_sampling",
         "ocr_engine": ocr_engine,
         "ocr_lang": ocr_lang,
+        "text_role_mode": text_role_mode,
+        "text_role_classification_path": "text_role_classification.json",
+        "text_size_normalization_report_path": "text_size_normalization_report.json",
+        "text_size_levels": text_size_levels,
         "text_regions": regions,
     }
     text_program = {
@@ -422,13 +628,17 @@ def build_text_layer(
     }
 
     write_json(out / "reference_text_geometry.json", geometry)
+    write_json(out / "text_role_classification.json", role_report)
     write_json(out / "text_program.json", text_program)
     write_json(out / "text_alignment_report.json", alignment_report)
     write_json(out / "ocr_text_quality_report.json", ocr_report)
+    _write_text_size_decisions(out, text_size_report)
     write_json(out / "publication_readability_note.json", readability_note)
     program["text_program"] = text_program
     program["text_program_path"] = "text_program.json"
     program["reference_text_geometry_path"] = "reference_text_geometry.json"
     program["text_alignment_report_path"] = "text_alignment_report.json"
+    program["text_role_classification_path"] = "text_role_classification.json"
+    program["text_size_normalization_report_path"] = "text_size_normalization_report.json"
     write_json(out / "figure_program.json", program)
     return program

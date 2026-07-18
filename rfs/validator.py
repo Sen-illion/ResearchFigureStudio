@@ -450,6 +450,44 @@ def validate_output(out_dir: str | Path) -> dict:
     except Exception as exc:
         errors.append(f"Invalid ocr_text_quality_report.json: {exc}")
 
+    text_role_path = root / "text_role_classification.json"
+    if text_role_path.exists():
+        try:
+            text_roles = json.loads(text_role_path.read_text(encoding="utf-8"))
+            if not str(text_roles.get("summary", "")).strip():
+                errors.append("text_role_classification.json missing summary")
+            if str(text_roles.get("mode", "")).lower() not in {"heuristic", "vlm"}:
+                errors.append("text_role_classification.json mode must be heuristic or vlm")
+            if not isinstance(text_roles.get("items"), list):
+                errors.append("text_role_classification.json must contain items list")
+            for item in text_roles.get("items", []) if isinstance(text_roles.get("items"), list) else []:
+                tid = str(item.get("text_id") or "")
+                for key in ["role", "hierarchy_level", "size_class", "group_hint", "source"]:
+                    if key not in item:
+                        errors.append(f"text_role_classification item {tid} missing {key}")
+        except Exception as exc:
+            errors.append(f"Invalid text_role_classification.json: {exc}")
+
+    text_size_path = root / "text_size_normalization_report.json"
+    if text_size_path.exists():
+        try:
+            text_sizes = json.loads(text_size_path.read_text(encoding="utf-8"))
+            if not str(text_sizes.get("summary", "")).strip():
+                errors.append("text_size_normalization_report.json missing summary")
+            if str(text_sizes.get("method", "")).lower() != "role_aware_median_cluster":
+                errors.append("text_size_normalization_report.json method must be role_aware_median_cluster")
+            if not isinstance(text_sizes.get("text_size_levels"), list) or not text_sizes.get("text_size_levels"):
+                errors.append("text_size_normalization_report.json must contain non-empty text_size_levels")
+            if not isinstance(text_sizes.get("items"), list) or not text_sizes.get("items"):
+                errors.append("text_size_normalization_report.json must contain non-empty items")
+            for item in text_sizes.get("items", []) if isinstance(text_sizes.get("items"), list) else []:
+                tid = str(item.get("text_id") or "")
+                for key in ["raw_font_size_pt", "final_font_size_pt", "text_size_level_id", "final_role"]:
+                    if key not in item:
+                        errors.append(f"text_size_normalization_report item {tid} missing {key}")
+        except Exception as exc:
+            errors.append(f"Invalid text_size_normalization_report.json: {exc}")
+
     try:
         text_program = json.loads((root / "text_program.json").read_text(encoding="utf-8"))
         policy = str(text_program.get("policy", "")).lower()
@@ -703,7 +741,7 @@ def validate_output(out_dir: str | Path) -> dict:
         errors.append(f"Too few generated assets: {asset_count}")
 
     text_blob = ""
-    for name in ["prompts.md", "style_sheet.md", "reference_style_profile.json", "arrow_style_profile.json", "selected_arrow_routes.json", "arrow_quality_report.json", "figure_program.json", "reference_geometry.json", "reference_controls.json", "reference_text_geometry.json", "text_program.json", "ocr_text_quality_report.json", "text_alignment_report.json", "slot_visual_spec.json", "reference_slot_prompt_brief.json", "slot_prompt_plan.json", "asset_quality_report.json", "asset_complexity_report.json", "composition_quality_report.json", "asset_visual_review.json", "alignment_review.md", "critic_report.md", "visual_critic_iter_0.json"]:
+    for name in ["prompts.md", "style_sheet.md", "reference_style_profile.json", "arrow_style_profile.json", "selected_arrow_routes.json", "arrow_quality_report.json", "figure_program.json", "reference_geometry.json", "reference_controls.json", "reference_text_geometry.json", "text_program.json", "ocr_text_quality_report.json", "text_role_classification.json", "text_size_normalization_report.json", "text_size_decisions.md", "text_alignment_report.json", "slot_visual_spec.json", "reference_slot_prompt_brief.json", "slot_prompt_plan.json", "asset_quality_report.json", "asset_complexity_report.json", "composition_quality_report.json", "asset_visual_review.json", "alignment_review.md", "critic_report.md", "visual_critic_iter_0.json"]:
         path = root / name
         if path.exists():
             text_blob += "\n" + path.read_text(encoding="utf-8", errors="ignore").lower()

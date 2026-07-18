@@ -110,6 +110,8 @@ def make_framework(
     text_extractor_mode: str = "ocr",
     ocr_engine: str = "paddle",
     ocr_lang: str = "en_ch",
+    text_role_mode: str = "heuristic",
+    text_role_model: str | None = None,
     presentations_qa: bool = False,
     presentations_workspace: str | Path | None = None,
     presentations_scale: int = 2,
@@ -155,6 +157,8 @@ def make_framework(
         text_extractor_mode=text_extractor_mode,
         ocr_engine=ocr_engine,
         ocr_lang=ocr_lang,
+        text_role_mode=text_role_mode,
+        text_role_model=text_role_model,
     )
     generate_assets(
         program,
@@ -199,6 +203,8 @@ def make_framework(
             text_extractor_mode=text_extractor_mode,
             ocr_engine=ocr_engine,
             ocr_lang=ocr_lang,
+            text_role_mode=text_role_mode,
+            text_role_model=text_role_model,
         )
         pptx = compile_ppt(program, out_dir)
         if export:
@@ -250,6 +256,8 @@ def make_framework(
         "text_extractor_mode": text_extractor_mode,
         "ocr_engine": ocr_engine,
         "ocr_lang": ocr_lang,
+        "text_role_mode": text_role_mode,
+        "text_role_model": text_role_model,
         "presentations_qa": presentations_report,
         "slot_count": inventory.get("slot_count"),
         "slot_source": slot_source,

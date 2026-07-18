@@ -881,6 +881,51 @@ def validate_text_alignment_report(path: Path) -> int:
     return len(items)
 
 
+def validate_optional_text_role_classification(path: Path) -> int:
+    data = read_json(path)
+    if not isinstance(data, dict):
+        fail("text_role_classification.json must be a JSON object")
+    if not str(data.get("summary", "")).strip():
+        fail("text_role_classification.json missing summary")
+    if str(data.get("mode", "")).lower() not in {"heuristic", "vlm"}:
+        fail("text_role_classification.json mode must be heuristic or vlm")
+    items = data.get("items")
+    if not isinstance(items, list):
+        fail("text_role_classification.json must contain items list")
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            fail(f"text_role_classification item at index {index} must be an object")
+        tid = str(item.get("text_id") or index)
+        for key in ("role", "hierarchy_level", "size_class", "group_hint", "source"):
+            if key not in item:
+                fail(f"text_role_classification item {tid} missing key: {key}")
+    return len(items)
+
+
+def validate_optional_text_size_normalization(path: Path) -> int:
+    data = read_json(path)
+    if not isinstance(data, dict):
+        fail("text_size_normalization_report.json must be a JSON object")
+    if not str(data.get("summary", "")).strip():
+        fail("text_size_normalization_report.json missing summary")
+    if str(data.get("method", "")).lower() != "role_aware_median_cluster":
+        fail("text_size_normalization_report.json method must be role_aware_median_cluster")
+    levels = data.get("text_size_levels")
+    if not isinstance(levels, list) or not levels:
+        fail("text_size_normalization_report.json must contain non-empty text_size_levels")
+    items = data.get("items")
+    if not isinstance(items, list) or not items:
+        fail("text_size_normalization_report.json must contain non-empty items")
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            fail(f"text_size_normalization_report item at index {index} must be an object")
+        tid = str(item.get("text_id") or index)
+        for key in ("raw_font_size_pt", "final_font_size_pt", "text_size_level_id", "final_role"):
+            if key not in item:
+                fail(f"text_size_normalization_report item {tid} missing key: {key}")
+    return len(items)
+
+
 def validate_reference_style_profile(path: Path) -> None:
     data = read_json(path)
     if not isinstance(data, dict):
@@ -1091,6 +1136,18 @@ def main(argv: list[str]) -> int:
     text_alignment_count = validate_text_alignment_report(text_alignment_report)
     ok(f"Validated text_alignment_report.json with {text_alignment_count} text alignment items")
 
+    text_role_classification = root / "text_role_classification.json"
+    if text_role_classification.exists():
+        require_front_summary(text_role_classification)
+        text_role_count = validate_optional_text_role_classification(text_role_classification)
+        ok(f"Validated text_role_classification.json with {text_role_count} text role decisions")
+
+    text_size_normalization = root / "text_size_normalization_report.json"
+    if text_size_normalization.exists():
+        require_front_summary(text_size_normalization)
+        text_size_count = validate_optional_text_size_normalization(text_size_normalization)
+        ok(f"Validated text_size_normalization_report.json with {text_size_count} text size decisions")
+
     slot_visual_spec = root / "slot_visual_spec.json"
     if not slot_visual_spec.exists() or slot_visual_spec.stat().st_size == 0:
         fail("Missing non-empty slot_visual_spec.json")
@@ -1200,6 +1257,9 @@ def main(argv: list[str]) -> int:
         root / "reference_controls.json",
         root / "reference_text_geometry.json",
         root / "text_program.json",
+        root / "text_role_classification.json",
+        root / "text_size_normalization_report.json",
+        root / "text_size_decisions.md",
         root / "text_alignment_report.json",
         root / "arrow_style_profile.json",
         root / "selected_arrow_routes.json",

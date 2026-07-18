@@ -41,6 +41,7 @@ def _doctor() -> dict:
         "IMAGE_MODEL": {"present": env_present("IMAGE_MODEL"), "value": os.getenv("IMAGE_MODEL") if env_present("IMAGE_MODEL") else None},
         "RFS_LOCATOR_MODEL": {"present": env_present("RFS_LOCATOR_MODEL"), "value": os.getenv("RFS_LOCATOR_MODEL") if env_present("RFS_LOCATOR_MODEL") else None},
         "RFS_PROMPT_PLANNER_MODEL": {"present": env_present("RFS_PROMPT_PLANNER_MODEL"), "value": os.getenv("RFS_PROMPT_PLANNER_MODEL") if env_present("RFS_PROMPT_PLANNER_MODEL") else None},
+        "RFS_TEXT_ROLE_MODEL": {"present": env_present("RFS_TEXT_ROLE_MODEL"), "value": os.getenv("RFS_TEXT_ROLE_MODEL") if env_present("RFS_TEXT_ROLE_MODEL") else None},
         "RFS_ONLINE_JUDGE_MODEL": {"present": env_present("RFS_ONLINE_JUDGE_MODEL"), "value": os.getenv("RFS_ONLINE_JUDGE_MODEL") if env_present("RFS_ONLINE_JUDGE_MODEL") else None},
         "RFS_FROZEN_JUDGE_MODEL": {"present": env_present("RFS_FROZEN_JUDGE_MODEL"), "value": os.getenv("RFS_FROZEN_JUDGE_MODEL") if env_present("RFS_FROZEN_JUDGE_MODEL") else None},
         "RFS_IMAGE_EDIT_URL": {"present": env_present("RFS_IMAGE_EDIT_URL"), "value": os.getenv("RFS_IMAGE_EDIT_URL") if env_present("RFS_IMAGE_EDIT_URL") else None},
@@ -103,6 +104,8 @@ def build_parser() -> argparse.ArgumentParser:
     make.add_argument("--text-extractor-mode", choices=["heuristic", "ocr"], default="ocr", help="Editable text layer source. Default ocr uses local OCR when available and falls back to heuristic.")
     make.add_argument("--ocr-engine", choices=["paddle", "easyocr", "off"], default="paddle", help="Local OCR engine for reference text extraction. Default: paddle.")
     make.add_argument("--ocr-lang", choices=["en", "ch", "en_ch"], default="en_ch", help="OCR language hint. Default: en_ch.")
+    make.add_argument("--text-role-mode", choices=["heuristic", "vlm"], default="heuristic", help="Text role classification source. Default: heuristic. Use vlm to classify OCR text roles before median font-size clustering.")
+    make.add_argument("--text-role-model", help="Optional VLM model for --text-role-mode vlm. Defaults to RFS_TEXT_ROLE_MODEL/MODEL_VLM.")
     make.add_argument("--presentations-qa", action="store_true", help="Run optional Presentations plugin import/render/layout QA after export. This never mutates the PPTX.")
     make.add_argument("--presentations-workspace", help="Optional workspace for Presentations QA scratch artifacts.")
     make.add_argument("--presentations-scale", type=int, default=2, help="Preview render scale for Presentations QA. Default: 2.")
@@ -142,7 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _print_human(data: dict) -> None:
     if "ok" in data:
         print(f"ok: {data['ok']}")
-    for key in ["out_dir", "approved_image", "thresholds_met", "stop_reason", "rounds_completed", "online_judge_model", "frozen_judge_model", "weak_judge_isolation", "pptx", "pdf", "png", "asset_count", "slot_count", "slot_source", "asset_mode", "candidates_per_slot", "asset_workers", "asset_retries", "asset_review_mode", "locator_mode", "control_localizer_mode", "arrow_style_mode", "prompt_plan_mode", "prompt_plan_workers", "complexity_profile", "critic_mode", "critic_iterations", "text_extractor_mode", "ocr_engine", "ocr_lang"]:
+    for key in ["out_dir", "approved_image", "thresholds_met", "stop_reason", "rounds_completed", "online_judge_model", "frozen_judge_model", "weak_judge_isolation", "pptx", "pdf", "png", "asset_count", "slot_count", "slot_source", "asset_mode", "candidates_per_slot", "asset_workers", "asset_retries", "asset_review_mode", "locator_mode", "control_localizer_mode", "arrow_style_mode", "prompt_plan_mode", "prompt_plan_workers", "complexity_profile", "critic_mode", "critic_iterations", "text_extractor_mode", "ocr_engine", "ocr_lang", "text_role_mode", "text_role_model"]:
         if key in data:
             print(f"{key}: {data[key]}")
     if data.get("presentations_qa"):
@@ -203,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
                 text_extractor_mode=args.text_extractor_mode,
                 ocr_engine=args.ocr_engine,
                 ocr_lang=args.ocr_lang,
+                text_role_mode=args.text_role_mode,
+                text_role_model=args.text_role_model,
                 presentations_qa=args.presentations_qa,
                 presentations_workspace=args.presentations_workspace,
                 presentations_scale=args.presentations_scale,
