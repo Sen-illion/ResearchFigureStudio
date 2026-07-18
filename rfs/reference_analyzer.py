@@ -1385,14 +1385,12 @@ def analyze_reference(
         control_warnings.append("hybrid_downgraded_to_heuristic:no_api_credentials")
     allow_legacy_templates = False
     try:
-        import os
         allow_legacy_templates = os.getenv("RFS_ALLOW_LEGACY_TEMPLATES", "").lower() in {"1", "true", "yes"}
     except Exception:
         allow_legacy_templates = False
 
     reference_slot_source = str(slot_source or "").lower() or "paper"
     try:
-        import os
         reference_slot_source = str(slot_source or os.getenv("RFS_SLOT_SOURCE", "paper")).lower()
     except Exception:
         reference_slot_source = str(slot_source or "paper").lower()

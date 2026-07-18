@@ -251,3 +251,10 @@ CI 在 Windows 上跑 Python 3.10 和 3.11，步骤包括：
 - VLM 只能产生结构化 JSON、布局建议或 prompt 计划；不要让 VLM 直接写任意 PowerPoint 代码。
 - 真实 API 失败时不要静默切换到 placeholder 或 vector-only；应明确失败或让调用者选择 fallback。
 - 保持 labels、formulas、arrows、controls 在 PPT 层可编辑，图像资产只承载局部视觉块。
+
+
+
+***约定：***
+1. 每次进行修改后都要提交一次commit，提交简介简单概括本次修改内容，并且给出commit ID，目的是保证修改不满意可退回到上一次修改。
+2. 每次拉取新的代码先更新AGENT.md的快速理解项目部分。
+3. 运行项目时在虚拟环境里运行，API在.env文件中，需要手动注入。
