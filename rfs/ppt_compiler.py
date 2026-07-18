@@ -256,6 +256,85 @@ def _arrow_points_from_path(path: list, width_in: float, height_in: float) -> li
     return points
 
 
+def _draw_connector_segments(
+    slide,
+    points: list[tuple[float, float]],
+    connector_type,
+    color: str,
+    line_width: float,
+    line_cap: str,
+    dashed: bool,
+    arrowhead_size: str,
+    add_arrowhead: bool = True,
+    halo_width: float = 0.0,
+    halo_color: str = "#FFFFFF",
+) -> int:
+    segment_count = 0
+    for idx, ((x1, y1), (x2, y2)) in enumerate(zip(points[:-1], points[1:])):
+        if halo_width > 0:
+            halo = slide.shapes.add_connector(connector_type, Inches(x1), Inches(y1), Inches(x2), Inches(y2))
+            halo.line.color.rgb = _rgb(halo_color)
+            halo.line.width = Pt(max(line_width + 1.2, halo_width))
+            _apply_line_cap(halo, line_cap)
+            if dashed:
+                halo.line.dash_style = MSO_LINE_DASH_STYLE.DASH
+        connector = slide.shapes.add_connector(connector_type, Inches(x1), Inches(y1), Inches(x2), Inches(y2))
+        connector.line.color.rgb = _rgb(color)
+        connector.line.width = Pt(line_width)
+        _apply_line_cap(connector, line_cap)
+        if dashed:
+            connector.line.dash_style = MSO_LINE_DASH_STYLE.DASH
+        if add_arrowhead and idx == len(points) - 2:
+            _apply_arrow(connector, arrowhead_size)
+        segment_count += 1
+    return segment_count
+
+
+def _block_arrow_shape_type(start: tuple[float, float], end: tuple[float, float]):
+    dx = float(end[0]) - float(start[0])
+    dy = float(end[1]) - float(start[1])
+    if abs(dx) >= abs(dy):
+        return MSO_SHAPE.RIGHT_ARROW if dx >= 0 else MSO_SHAPE.LEFT_ARROW
+    return MSO_SHAPE.DOWN_ARROW if dy >= 0 else MSO_SHAPE.UP_ARROW
+
+
+def _draw_filled_block_arrow(slide, arrow: dict, points: list[tuple[float, float]], width_in: float, height_in: float, fallback_color: str) -> dict:
+    start, end = points[0], points[-1]
+    dx = float(end[0]) - float(start[0])
+    dy = float(end[1]) - float(start[1])
+    horizontal = abs(dx) >= abs(dy)
+    thickness_percent = float(arrow.get("block_arrow_thickness_percent") or 0.052)
+    if horizontal:
+        arrow_w = max(0.12, abs(dx))
+        arrow_h = max(0.14, min(height_in, max(abs(dy) + 0.12, height_in * thickness_percent)))
+        left = min(start[0], end[0])
+        top = (float(start[1]) + float(end[1])) / 2 - arrow_h / 2
+    else:
+        arrow_w = max(0.14, min(width_in, max(abs(dx) + 0.12, width_in * thickness_percent)))
+        arrow_h = max(0.12, abs(dy))
+        left = (float(start[0]) + float(end[0])) / 2 - arrow_w / 2
+        top = min(start[1], end[1])
+    left = max(0.0, min(left, width_in - arrow_w))
+    top = max(0.0, min(top, height_in - arrow_h))
+    shape = slide.shapes.add_shape(_block_arrow_shape_type(start, end), Inches(left), Inches(top), Inches(arrow_w), Inches(arrow_h))
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = _rgb(str(arrow.get("fill_color") or "#AFC6DE"))
+    shape.line.color.rgb = _rgb(str(arrow.get("outline_color") or fallback_color or "#3F5063"))
+    shape.line.width = Pt(float(arrow.get("outline_width_pt") or 1.55))
+    shape.shadow.inherit = False
+    return {
+        "segment_count": 1,
+        "point_count": len(points),
+        "connector_type": "filled_block_arrow_shape",
+        "block_arrow_bbox_in": {
+            "x": round(left, 4),
+            "y": round(top, 4),
+            "w": round(arrow_w, 4),
+            "h": round(arrow_h, 4),
+        },
+    }
+
+
 def _draw_program_arrows(slide, program: dict, width_in: float, height_in: float) -> list[dict]:
     objects_by_id = _object_map(program)
     style = program.get("style", {}) if isinstance(program.get("style"), dict) else {}
@@ -275,9 +354,12 @@ def _draw_program_arrows(slide, program: dict, width_in: float, height_in: float
         else:
             continue
         token = token_map.get(str(arrow.get("style_token_id")))
-        arrow_color = str(token.get("hex")) if token else "#1F6F8B"
+        arrow_color = str(arrow.get("stroke_color") or (token.get("hex") if token else "#1F6F8B"))
         control_kind = str(arrow.get("control_kind") or arrow.get("type", "")).lower()
+        render_style = str(arrow.get("render_style") or "line_connector").lower()
         dashed = control_kind in {"dashed_loop", "dashed", "loop"}
+        if render_style == "dashed_loop_connector":
+            dashed = True
         if str(arrow.get("line_pattern", "")).lower() in {"dash", "dashed"}:
             dashed = True
         line_width = float(arrow.get("stroke_width_pt") or style.get("arrow_weight_pt") or 1.7)
@@ -288,42 +370,59 @@ def _draw_program_arrows(slide, program: dict, width_in: float, height_in: float
         arrowhead_size = str(arrow.get("arrowhead_size") or "sm").lower()
         if arrowhead_size not in {"sm", "med", "lg"}:
             arrowhead_size = "sm"
-        segment_count = 0
-        for idx, ((x1, y1), (x2, y2)) in enumerate(zip(points[:-1], points[1:])):
-            if halo_width > 0:
-                halo = slide.shapes.add_connector(connector_type, Inches(x1), Inches(y1), Inches(x2), Inches(y2))
-                halo.line.color.rgb = _rgb(halo_color)
-                halo.line.width = Pt(max(line_width + 1.2, halo_width))
-                _apply_line_cap(halo, str(arrow.get("line_cap") or "round"))
-                if dashed:
-                    halo.line.dash_style = MSO_LINE_DASH_STYLE.DASH
-            connector = slide.shapes.add_connector(connector_type, Inches(x1), Inches(y1), Inches(x2), Inches(y2))
-            connector.line.color.rgb = _rgb(arrow_color)
-            connector.line.width = Pt(line_width)
-            _apply_line_cap(connector, str(arrow.get("line_cap") or "round"))
-            if dashed:
-                connector.line.dash_style = MSO_LINE_DASH_STYLE.DASH
-            if idx == len(points) - 2:
-                _apply_arrow(connector, arrowhead_size)
-            segment_count += 1
+        branch_count = 0
+        block_metrics = {}
+        if render_style == "filled_block_arrow":
+            block_metrics = _draw_filled_block_arrow(slide, arrow, points, width_in, height_in, arrow_color)
+            segment_count = int(block_metrics["segment_count"])
+        elif render_style == "branch_line_connector" and isinstance(arrow.get("trunk_path_percent"), list) and isinstance(arrow.get("branches"), list):
+            trunk_points = _arrow_points_from_path(arrow["trunk_path_percent"], width_in, height_in)
+            segment_count = _draw_connector_segments(
+                slide, trunk_points, connector_type, arrow_color, line_width, str(arrow.get("line_cap") or "round"), dashed, arrowhead_size,
+                add_arrowhead=False, halo_width=halo_width, halo_color=halo_color,
+            )
+            for branch in arrow.get("branches", []):
+                branch_path = branch.get("path_percent") if isinstance(branch, dict) else None
+                if not isinstance(branch_path, list):
+                    continue
+                branch_points = _arrow_points_from_path(branch_path, width_in, height_in)
+                segment_count += _draw_connector_segments(
+                    slide, branch_points, connector_type, arrow_color, line_width, str(arrow.get("line_cap") or "round"), dashed, arrowhead_size,
+                    add_arrowhead=True, halo_width=halo_width, halo_color=halo_color,
+                )
+                branch_count += 1
+        else:
+            segment_count = _draw_connector_segments(
+                slide, points, connector_type, arrow_color, line_width, str(arrow.get("line_cap") or "round"), dashed, arrowhead_size,
+                add_arrowhead=True, halo_width=halo_width, halo_color=halo_color,
+            )
         rendered.append({
             "arrow_id": arrow.get("id"),
             "control_kind": control_kind or "straight_arrow",
             "semantic_role": arrow.get("semantic_role"),
+            "render_style": render_style,
+            "route_intent": arrow.get("route_intent"),
+            "visual_weight": arrow.get("visual_weight"),
             "route_style": route_style,
             "bundle_id": arrow.get("bundle_id"),
             "lane_index": arrow.get("lane_index"),
             "line_cap": arrow.get("line_cap", "round"),
             "line_pattern": "dash" if dashed else "solid",
-            "connector_type": "curve" if connector_type == MSO_CONNECTOR.CURVE else "straight",
+            "connector_type": block_metrics.get("connector_type") or ("curve" if connector_type == MSO_CONNECTOR.CURVE else "straight"),
             "halo_width_pt": halo_width,
             "halo_color": halo_color if halo_width > 0 else None,
             "stroke_width_pt": line_width,
+            "stroke_color": arrow_color,
+            "fill_color": arrow.get("fill_color"),
+            "outline_color": arrow.get("outline_color"),
+            "outline_width_pt": arrow.get("outline_width_pt"),
             "arrowhead_size": arrowhead_size,
             "routing_algorithm": arrow.get("routing_algorithm"),
             "route_generation_status": arrow.get("route_generation_status"),
             "segment_count": segment_count,
+            "branch_count": branch_count,
             "point_count": len(points),
+            **({"block_arrow_bbox_in": block_metrics["block_arrow_bbox_in"]} if block_metrics.get("block_arrow_bbox_in") else {}),
             "editable_in": "pptx",
             "render_policy": "ppt_shape_not_image_asset",
             "status": "ok" if segment_count else "not_rendered",

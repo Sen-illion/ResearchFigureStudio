@@ -170,6 +170,106 @@ class ArrowRouterTests(unittest.TestCase):
             self.assertEqual(quality["reference_tunnel_violations"], [])
             self.assertGreaterEqual(quality["aesthetic_tunnel_adjusted_count"], 2)
 
+    def test_vlm_style_hints_normalize_to_block_and_elbow_render_styles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            program = {
+                "summary": "Figure program.",
+                "canvas": {"width_in": 10, "height_in": 5},
+                "style": {"color_tokens": [{"token_id": "arrow_001", "hex": "#111111"}]},
+                "panels": [],
+                "slots": [
+                    {"id": "a", "bbox_percent": {"x": 0.10, "y": 0.20, "w": 0.10, "h": 0.10}},
+                    {"id": "b", "bbox_percent": {"x": 0.38, "y": 0.20, "w": 0.10, "h": 0.10}},
+                    {"id": "c", "bbox_percent": {"x": 0.70, "y": 0.54, "w": 0.10, "h": 0.10}},
+                ],
+                "arrows": [
+                    {
+                        "id": "stage_transition",
+                        "source_id": "a",
+                        "target_id": "b",
+                        "control_kind": "transition_arrow",
+                        "render_style": "filled_block_arrow",
+                        "visual_weight": "chunky",
+                        "route_intent": "straight",
+                        "path_percent": [[0.20, 0.25], [0.38, 0.25]],
+                        "style_token_id": "arrow_001",
+                        "editable_in": "pptx",
+                        "render_policy": "ppt_shape_not_image_asset",
+                        "binding_source": "vlm",
+                    },
+                    {
+                        "id": "turn_flow",
+                        "source_id": "a",
+                        "target_id": "c",
+                        "control_kind": "elbow_connector",
+                        "render_style": "elbow_connector",
+                        "route_intent": "orthogonal",
+                        "preferred_axis": "horizontal_first",
+                        "path_percent": [],
+                        "style_token_id": "arrow_001",
+                        "editable_in": "pptx",
+                        "render_policy": "ppt_shape_not_image_asset",
+                        "binding_source": "vlm",
+                    },
+                ],
+            }
+
+            result = style_and_route_arrows(program, out, mode="reference")
+            by_id = {item["id"]: item for item in result["arrows"]}
+
+            block = by_id["stage_transition"]
+            self.assertEqual(block["render_style"], "filled_block_arrow")
+            self.assertEqual(block["visual_weight"], "chunky")
+            self.assertEqual(block["route_generation_status"], "bbox_route_from_hint")
+            self.assertFalse(block["reference_locked"])
+            self.assertEqual(block["fill_color"], "#AFC6DE")
+            self.assertEqual(block["outline_color"], "#3F5063")
+
+            turn = by_id["turn_flow"]
+            self.assertEqual(turn["render_style"], "elbow_connector")
+            self.assertEqual(turn["route_intent"], "orthogonal")
+            self.assertGreaterEqual(len(turn["path_percent"]), 3)
+            self.assertEqual(turn["routing_algorithm"], "bbox_route_from_vlm_hint")
+
+    def test_branch_connector_builds_trunk_and_branch_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            program = {
+                "summary": "Figure program.",
+                "canvas": {"width_in": 10, "height_in": 5},
+                "style": {"color_tokens": [{"token_id": "arrow_001", "hex": "#111111"}]},
+                "panels": [],
+                "slots": [
+                    {"id": "source", "bbox_percent": {"x": 0.10, "y": 0.30, "w": 0.10, "h": 0.10}},
+                    {"id": "target_top", "bbox_percent": {"x": 0.72, "y": 0.18, "w": 0.10, "h": 0.10}},
+                    {"id": "target_bottom", "bbox_percent": {"x": 0.72, "y": 0.50, "w": 0.10, "h": 0.10}},
+                ],
+                "arrows": [{
+                    "id": "branch_flow",
+                    "source_id": "source",
+                    "target_id": "target_top",
+                    "target_ids": ["target_bottom"],
+                    "control_kind": "branch_connector",
+                    "render_style": "branch_line_connector",
+                    "route_intent": "branch",
+                    "path_percent": [],
+                    "style_token_id": "arrow_001",
+                    "editable_in": "pptx",
+                    "render_policy": "ppt_shape_not_image_asset",
+                    "binding_source": "vlm",
+                }],
+            }
+
+            result = style_and_route_arrows(program, out, mode="reference")
+            branch = result["arrows"][0]
+            self.assertEqual(branch["render_style"], "branch_line_connector")
+            self.assertEqual(branch["route_generation_status"], "branch_route_from_bbox")
+            self.assertEqual(branch["branch_count"], 2)
+            self.assertGreaterEqual(len(branch["trunk_path_percent"]), 2)
+            self.assertEqual(len(branch["branches"]), 2)
+            self.assertTrue(all(len(item["path_percent"]) >= 2 for item in branch["branches"]))
+
 
 if __name__ == "__main__":
     unittest.main()

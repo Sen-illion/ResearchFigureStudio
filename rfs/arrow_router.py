@@ -8,6 +8,17 @@ from .utils import write_json
 ROUTER_VERSION = "reference-constrained-orthogonal-v1"
 AESTHETIC_ROUTER_VERSION = "reference-tunnel-aesthetic-v2"
 DEFAULT_REFERENCE_TUNNEL_PERCENT = 0.024
+VALID_RENDER_STYLES = {
+    "filled_block_arrow",
+    "line_connector",
+    "elbow_connector",
+    "branch_line_connector",
+    "dashed_loop_connector",
+}
+VALID_ROUTE_INTENTS = {"straight", "orthogonal", "branch", "loop"}
+VALID_VISUAL_WEIGHTS = {"chunky", "normal", "thin"}
+VALID_PREFERRED_AXES = {"horizontal", "vertical", "horizontal_first", "vertical_first"}
+VALID_LINE_PATTERNS = {"solid", "dash", "dashed"}
 
 
 def _bbox_center(bbox: dict[str, Any]) -> list[float]:
@@ -36,6 +47,47 @@ def _anchor_point(obj: dict | None, anchor: str) -> list[float] | None:
     return [round(point[0], 4), round(point[1], 4)]
 
 
+def _coerce_choice(value: Any, allowed: set[str], default: str) -> str:
+    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "block_arrow": "filled_block_arrow",
+        "chunky_arrow": "filled_block_arrow",
+        "thick_arrow": "filled_block_arrow",
+        "straight_arrow": "line_connector",
+        "straight": "straight",
+        "elbow": "elbow_connector",
+        "orthogonal_connector": "elbow_connector",
+        "branch_connector": "branch_line_connector",
+        "dashed_loop": "dashed_loop_connector",
+        "loop_connector": "dashed_loop_connector",
+        "dashed": "dash",
+    }
+    text = aliases.get(text, text)
+    return text if text in allowed else default
+
+
+def _directional_edge_path(source: dict | None, target: dict | None) -> tuple[list[list[float]], str, str]:
+    if not source or not target:
+        return [], "auto", "auto"
+    sbox = source.get("bbox_percent") if isinstance(source.get("bbox_percent"), dict) else None
+    tbox = target.get("bbox_percent") if isinstance(target.get("bbox_percent"), dict) else None
+    if not sbox or not tbox:
+        return [], "auto", "auto"
+    sx, sy = _bbox_center(sbox)
+    tx, ty = _bbox_center(tbox)
+    dx = tx - sx
+    dy = ty - sy
+    if abs(dx) >= abs(dy):
+        s_anchor = "right_mid" if dx >= 0 else "left_mid"
+        t_anchor = "left_mid" if dx >= 0 else "right_mid"
+    else:
+        s_anchor = "bottom_mid" if dy >= 0 else "top_mid"
+        t_anchor = "top_mid" if dy >= 0 else "bottom_mid"
+    s = _anchor_point(source, s_anchor)
+    t = _anchor_point(target, t_anchor)
+    return ([s, t] if s and t else []), s_anchor, t_anchor
+
+
 def _edge_path(source: dict | None, target: dict | None) -> list[list[float]]:
     if not source or not target:
         return []
@@ -56,6 +108,114 @@ def _edge_path(source: dict | None, target: dict | None) -> list[list[float]]:
     s = _anchor_point(source, s_anchor)
     t = _anchor_point(target, t_anchor)
     return [s, t] if s and t else []
+
+
+def _orthogonal_path(source: dict | None, target: dict | None, arrow: dict) -> list[list[float]]:
+    direct, source_anchor, target_anchor = _directional_edge_path(source, target)
+    if len(direct) < 2:
+        return []
+    if str(arrow.get("source_anchor", "")).lower() in {"", "auto"}:
+        arrow["source_anchor"] = source_anchor
+    if str(arrow.get("target_anchor", "")).lower() in {"", "auto"}:
+        arrow["target_anchor"] = target_anchor
+    start, end = direct[0], direct[-1]
+    preferred = _coerce_choice(arrow.get("preferred_axis"), VALID_PREFERRED_AXES, "")
+    if not preferred:
+        preferred = "horizontal_first" if abs(float(end[0]) - float(start[0])) >= abs(float(end[1]) - float(start[1])) else "vertical_first"
+    bend_side = str(arrow.get("bend_side") or "").lower()
+    if preferred in {"horizontal", "horizontal_first"}:
+        y = (float(start[1]) + float(end[1])) / 2
+        if bend_side in {"above", "top"}:
+            y = min(float(start[1]), float(end[1])) - 0.035
+        elif bend_side in {"below", "bottom"}:
+            y = max(float(start[1]), float(end[1])) + 0.035
+        y = min(0.985, max(0.015, y))
+        return _clean_path([start, [float(end[0]), y], end])
+    x = (float(start[0]) + float(end[0])) / 2
+    if bend_side in {"left"}:
+        x = min(float(start[0]), float(end[0])) - 0.035
+    elif bend_side in {"right"}:
+        x = max(float(start[0]), float(end[0])) + 0.035
+    x = min(0.985, max(0.015, x))
+    return _clean_path([start, [x, float(end[1])], end])
+
+
+def _axis_aligned_path(source: dict | None, target: dict | None, arrow: dict) -> list[list[float]]:
+    direct, source_anchor, target_anchor = _directional_edge_path(source, target)
+    if len(direct) < 2:
+        return []
+    preferred = _coerce_choice(arrow.get("preferred_axis"), VALID_PREFERRED_AXES, "")
+    if preferred not in {"horizontal", "vertical"}:
+        return direct
+    sbox = source.get("bbox_percent") if source and isinstance(source.get("bbox_percent"), dict) else None
+    tbox = target.get("bbox_percent") if target and isinstance(target.get("bbox_percent"), dict) else None
+    if not sbox or not tbox:
+        return direct
+    sx, sy = _bbox_center(sbox)
+    tx, ty = _bbox_center(tbox)
+    if preferred == "vertical":
+        source_anchor = "bottom_mid" if ty >= sy else "top_mid"
+        target_anchor = "top_mid" if ty >= sy else "bottom_mid"
+        start = _anchor_point(source, source_anchor)
+        target_edge = _anchor_point(target, target_anchor)
+        end = [start[0], target_edge[1]] if start and target_edge else None
+    else:
+        source_anchor = "right_mid" if tx >= sx else "left_mid"
+        target_anchor = "left_mid" if tx >= sx else "right_mid"
+        start = _anchor_point(source, source_anchor)
+        target_edge = _anchor_point(target, target_anchor)
+        end = [target_edge[0], start[1]] if start and target_edge else None
+    if start and end:
+        arrow["source_anchor"] = source_anchor
+        arrow["target_anchor"] = target_anchor
+        return _clean_path([start, end])
+    return direct
+
+
+def _branch_paths(arrow: dict, objects: dict[str, dict]) -> dict[str, Any] | None:
+    source_id = str(arrow.get("source_id") or arrow.get("source") or "")
+    target_ids = [str(arrow.get("target_id") or arrow.get("target") or "")]
+    for target_id in arrow.get("target_ids", []) if isinstance(arrow.get("target_ids"), list) else []:
+        target_ids.append(str(target_id))
+    target_ids = [item for index, item in enumerate(target_ids) if item and item in objects and item not in target_ids[:index]]
+    source = objects.get(source_id)
+    if not source or len(target_ids) < 2:
+        return None
+    source_box = source.get("bbox_percent") if isinstance(source.get("bbox_percent"), dict) else None
+    if not source_box:
+        return None
+    endpoints = []
+    for target_id in target_ids:
+        target = objects.get(target_id)
+        path, source_anchor, target_anchor = _directional_edge_path(source, target)
+        if len(path) >= 2:
+            endpoints.append({"target_id": target_id, "endpoint": path[-1], "target_anchor": target_anchor})
+            arrow.setdefault("source_anchor", source_anchor)
+    if len(endpoints) < 2:
+        return None
+    start = _anchor_point(source, str(arrow.get("source_anchor") or "right_mid")) or _bbox_center(source_box)
+    junction = arrow.get("junction_percent") if isinstance(arrow.get("junction_percent"), list) and len(arrow.get("junction_percent")) >= 2 else None
+    if not junction:
+        avg_x = sum(float(item["endpoint"][0]) for item in endpoints) / len(endpoints)
+        avg_y = sum(float(item["endpoint"][1]) for item in endpoints) / len(endpoints)
+        if abs(avg_x - float(start[0])) >= abs(avg_y - float(start[1])):
+            junction = [round((float(start[0]) + avg_x) / 2, 4), round(float(start[1]), 4)]
+        else:
+            junction = [round(float(start[0]), 4), round((float(start[1]) + avg_y) / 2, 4)]
+    junction = [round(min(1.0, max(0.0, float(junction[0]))), 4), round(min(1.0, max(0.0, float(junction[1]))), 4)]
+    branches = []
+    for item in endpoints:
+        endpoint = item["endpoint"]
+        if abs(float(endpoint[0]) - junction[0]) < 0.004 or abs(float(endpoint[1]) - junction[1]) < 0.004:
+            branch_path = _clean_path([junction, endpoint])
+        else:
+            branch_path = _clean_path([junction, [junction[0], endpoint[1]], endpoint])
+        branches.append({"target_id": item["target_id"], "target_anchor": item["target_anchor"], "path_percent": branch_path})
+    return {
+        "junction_percent": junction,
+        "trunk_path_percent": _clean_path([start, junction]),
+        "branches": branches,
+    }
 
 
 def _clean_path(points: list[list[float] | None]) -> list[list[float]]:
@@ -405,6 +565,91 @@ def _style_for_role(role: str, arrow: dict, mode: str = "reference") -> dict[str
     return {"route_style": "soft_straight", "stroke_width_pt": 1.45, "arrowhead_size": "sm", "line_cap": "round"}
 
 
+def _normalize_route_hints(arrow: dict, role: str) -> None:
+    kind = str(arrow.get("control_kind") or arrow.get("type") or "").lower()
+    route_intent = _coerce_choice(arrow.get("route_intent"), VALID_ROUTE_INTENTS, "")
+    visual_weight = _coerce_choice(arrow.get("visual_weight"), VALID_VISUAL_WEIGHTS, "normal")
+    preferred_axis = _coerce_choice(arrow.get("preferred_axis"), VALID_PREFERRED_AXES, "")
+    line_pattern = _coerce_choice(arrow.get("line_pattern"), VALID_LINE_PATTERNS, "solid")
+    render_style = _coerce_choice(arrow.get("render_style"), VALID_RENDER_STYLES, "")
+    combined = " ".join(str(arrow.get(key, "")) for key in ("control_kind", "type", "route_intent", "visual_weight", "visual_metaphor", "label")).lower()
+
+    if not route_intent:
+        if "loop" in combined or "dashed" in combined:
+            route_intent = "loop"
+        elif "branch" in combined or "connector" in combined:
+            route_intent = "branch"
+        elif "elbow" in combined or "orthogonal" in combined or "turn" in combined:
+            route_intent = "orthogonal"
+        else:
+            route_intent = "straight"
+
+    if not render_style:
+        if route_intent == "loop" or "loop" in kind or "dashed" in kind:
+            render_style = "dashed_loop_connector"
+        elif route_intent == "branch" or kind == "branch_connector":
+            render_style = "branch_line_connector"
+        elif visual_weight == "chunky" or "transition" in kind or "block" in combined or "thick" in combined:
+            render_style = "filled_block_arrow"
+        elif route_intent == "orthogonal" or "elbow" in kind:
+            render_style = "elbow_connector"
+        else:
+            render_style = "line_connector"
+
+    if render_style == "filled_block_arrow":
+        route_intent = "straight"
+        visual_weight = "chunky"
+    if render_style == "dashed_loop_connector":
+        route_intent = "loop"
+        line_pattern = "dash"
+    if render_style == "branch_line_connector":
+        route_intent = "branch"
+    if render_style == "elbow_connector":
+        route_intent = "orthogonal"
+
+    arrow["render_style"] = render_style
+    arrow["route_intent"] = route_intent
+    arrow["visual_weight"] = visual_weight
+    if preferred_axis:
+        arrow["preferred_axis"] = preferred_axis
+    arrow["line_pattern"] = "dash" if line_pattern == "dashed" else line_pattern
+    arrow.setdefault("render_policy", "ppt_shape_not_image_asset")
+
+
+def _style_for_render(render_style: str, arrow: dict, role: str, mode: str) -> dict[str, Any]:
+    base = _style_for_role(role, arrow, mode=mode)
+    weight = str(arrow.get("visual_weight") or "normal").lower()
+    if render_style == "filled_block_arrow":
+        base.update({
+            "route_style": "filled_block_arrow",
+            "stroke_width_pt": 0.0,
+            "arrowhead_size": "lg",
+            "line_cap": "round",
+            "fill_color": "#AFC6DE",
+            "outline_color": "#3F5063",
+            "outline_width_pt": 1.55,
+            "block_arrow_thickness_percent": 0.052,
+        })
+    elif render_style == "line_connector":
+        if role not in {"branch", "convergence"}:
+            base.update({"route_style": "soft_straight"})
+        base.update({"line_cap": "round"})
+    elif render_style == "elbow_connector":
+        base.update({"route_style": "rounded_elbow", "line_cap": "round"})
+    elif render_style == "branch_line_connector":
+        base.update({"route_style": "branch_elbow", "line_cap": "round"})
+    elif render_style == "dashed_loop_connector":
+        base.update({"route_style": "dashed_spline_like", "line_pattern": "dash", "line_cap": "round"})
+
+    if weight == "thin":
+        base["stroke_width_pt"] = min(float(base.get("stroke_width_pt", 1.45)), 1.2)
+        base["arrowhead_size"] = "sm"
+    elif weight == "chunky" and render_style != "filled_block_arrow":
+        base["stroke_width_pt"] = max(float(base.get("stroke_width_pt", 1.45)), 2.35)
+        base["arrowhead_size"] = "med"
+    return base
+
+
 def _reference_locked(arrow: dict) -> bool:
     path = arrow.get("path_percent") if isinstance(arrow.get("path_percent"), list) else []
     if len(path) < 2:
@@ -504,10 +749,47 @@ def style_and_route_arrows(
         arrow["target_id"] = target
         arrow["source"] = source
         arrow["target"] = target
+        role = _infer_role(arrow, out_counts, in_counts, panel_ids)
+        has_vlm_route_hint = str(arrow.get("binding_source", "")).lower() == "vlm" and any(
+            str(arrow.get(key, "")).strip()
+            for key in ("render_style", "route_intent", "visual_weight", "preferred_axis", "bend_side")
+        )
+        _normalize_route_hints(arrow, role)
         points = arrow.get("path_percent") if isinstance(arrow.get("path_percent"), list) else []
         locked = _reference_locked(arrow)
         route_meta: dict[str, Any] = {"routing_algorithm": "preserve_reference_path", "route_generation_status": "reference_locked"}
         fallback_allowed = str(arrow.get("route_policy", "")).lower() == "fallback_reroute_allowed"
+        bbox_reroute = has_vlm_route_hint or str(arrow.get("route_policy", "")).lower() == "bbox_route_from_hint"
+        branch_data = None
+        if arrow.get("render_style") == "branch_line_connector":
+            branch_data = _branch_paths(arrow, objects)
+            if branch_data:
+                arrow.update(branch_data)
+                points = branch_data["trunk_path_percent"] + branch_data["branches"][0]["path_percent"][1:]
+                route_meta = {
+                    "routing_algorithm": "bbox_branch_route_from_hint",
+                    "route_generation_status": "branch_route_from_bbox",
+                    "branch_count": len(branch_data["branches"]),
+                }
+                locked = False
+            else:
+                arrow["render_style"] = "elbow_connector"
+                arrow["route_intent"] = "orthogonal"
+                arrow["branch_fallback_reason"] = "missing_multiple_bound_targets"
+                bbox_reroute = True
+        if bbox_reroute and mode in {"reference", "aesthetic"} and arrow.get("render_style") in {"filled_block_arrow", "line_connector", "elbow_connector"}:
+            direct, inferred_source_anchor, inferred_target_anchor = _directional_edge_path(objects.get(source), objects.get(target))
+            if inferred_source_anchor != "auto" and str(arrow.get("source_anchor", "")).lower() in {"", "auto"}:
+                arrow["source_anchor"] = inferred_source_anchor
+            if inferred_target_anchor != "auto" and str(arrow.get("target_anchor", "")).lower() in {"", "auto"}:
+                arrow["target_anchor"] = inferred_target_anchor
+            if arrow.get("render_style") == "elbow_connector":
+                points = _orthogonal_path(objects.get(source), objects.get(target), arrow)
+            else:
+                points = _axis_aligned_path(objects.get(source), objects.get(target), arrow)
+            if len(points) >= 2:
+                route_meta = {"routing_algorithm": "bbox_route_from_vlm_hint", "route_generation_status": "bbox_route_from_hint"}
+                locked = False
         if (len(points) < 2 or (fallback_allowed and not locked)) and mode in {"reference", "aesthetic"}:
             obstacles = {obj_id: obj for obj_id, obj in slot_objects.items() if obj_id not in {source, target}}
             points, route_meta = _best_fallback_path(
@@ -520,8 +802,7 @@ def style_and_route_arrows(
         else:
             points = _clean_path(points)
         arrow["path_percent"] = [[round(float(p[0]), 4), round(float(p[1]), 4)] for p in points if isinstance(p, list) and len(p) >= 2]
-        role = _infer_role(arrow, out_counts, in_counts, panel_ids)
-        style = _style_for_role(role, arrow, mode=mode)
+        style = _style_for_render(str(arrow.get("render_style") or "line_connector"), arrow, role, mode)
         recompute_generated_style = str(arrow.get("aesthetic_policy", "")).startswith("reference_first")
         for key, value in style.items():
             if recompute_generated_style or key not in arrow or not str(arrow.get(key, "")).strip():
@@ -538,6 +819,8 @@ def style_and_route_arrows(
             arrow.setdefault("candidate_count", route_meta["candidate_count"])
         if "candidate_score" in route_meta:
             arrow.setdefault("candidate_score", route_meta["candidate_score"])
+        if "branch_count" in route_meta:
+            arrow["branch_count"] = route_meta["branch_count"]
         arrow.setdefault("corner_radius_percent", 0.018 if arrow.get("route_style") in {"rounded_elbow", "bundled_elbow"} else 0.0)
         if role == "branch":
             bundle_id = f"from_{source}"
@@ -607,6 +890,10 @@ def style_and_route_arrows(
             "source_id": arrow.get("source_id"),
             "target_id": arrow.get("target_id"),
             "semantic_role": arrow.get("semantic_role"),
+            "render_style": arrow.get("render_style"),
+            "route_intent": arrow.get("route_intent"),
+            "visual_weight": arrow.get("visual_weight"),
+            "preferred_axis": arrow.get("preferred_axis"),
             "route_style": arrow.get("route_style"),
             "bundle_id": arrow.get("bundle_id"),
             "lane_index": arrow.get("lane_index"),
@@ -630,6 +917,9 @@ def style_and_route_arrows(
             "halo_color": arrow.get("halo_color"),
             "candidate_count": arrow.get("candidate_count"),
             "candidate_score": arrow.get("candidate_score"),
+            "branch_count": arrow.get("branch_count"),
+            "trunk_path_percent": arrow.get("trunk_path_percent"),
+            "branches": arrow.get("branches"),
             "metrics": m,
             "aesthetic_score": arrow["aesthetic_score"],
         })
@@ -659,6 +949,7 @@ def style_and_route_arrows(
             "module_flow": {"route_style": "soft_curve", "stroke_width_pt": 1.55, "arrowhead_size": "sm", "halo_width_pt": 3.0},
         },
         "ppt_editability": "all arrows render as PPT connector shapes, not raster assets",
+        "render_style_policy": "VLM may choose filled block arrows, line connectors, elbow connectors, branch connectors, or dashed loops; code computes exact PPT geometry from bound objects.",
         "rounded_line_policy": "use round line caps and editable connector segments; reference-locked paths are not geometrically rewritten",
     }
     selected_routes = {

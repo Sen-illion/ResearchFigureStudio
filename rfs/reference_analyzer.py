@@ -534,9 +534,11 @@ Rules:
 - Use only object ids from the provided object list for source_id and target_id.
 - Keep path_percent as normalized coordinates.
 - If direction is uncertain, choose the most plausible source-target based on arrow direction and layout flow.
+- Decide render_style from the reference: filled_block_arrow for short chunky stage arrows, line_connector for ordinary straight arrows, elbow_connector for orthogonal turns, branch_line_connector for forked connectors, dashed_loop_connector for dashed feedback loops.
+- Use route_intent and preferred_axis only as routing hints; code will compute exact PPT geometry from source/target boxes.
 
 Return schema:
-{{"summary":"...","controls":[{{"id":"AR01","source_id":"...","target_id":"...","source_anchor":"right_mid","target_anchor":"left_mid","path_percent":[[0.1,0.2],[0.3,0.2]],"control_kind":"straight_arrow|elbow_connector|branch_connector|dashed_loop","confidence":0.0}}]}}
+{{"summary":"...","controls":[{{"id":"AR01","source_id":"...","target_id":"...","source_anchor":"right_mid","target_anchor":"left_mid","path_percent":[[0.1,0.2],[0.3,0.2]],"control_kind":"straight_arrow|transition_arrow|elbow_connector|branch_connector|dashed_loop","render_style":"filled_block_arrow|line_connector|elbow_connector|branch_line_connector|dashed_loop_connector","route_intent":"straight|orthogonal|branch|loop","visual_weight":"chunky|normal|thin","preferred_axis":"horizontal|vertical|horizontal_first|vertical_first","bend_side":"above|below|left|right","line_pattern":"solid|dash","confidence":0.0}}]}}
 
 Objects:
 {json.dumps([{"id": item.get("id"), "kind": item.get("kind"), "bbox_percent": item.get("bbox_percent")} for item in objects], ensure_ascii=False)}
@@ -581,6 +583,9 @@ Candidates:
                 merged["target_anchor"] = str(patch.get("target_anchor"))
             if str(patch.get("control_kind", "")).strip():
                 merged["control_kind"] = str(patch.get("control_kind"))
+            for key in ["render_style", "route_intent", "visual_weight", "preferred_axis", "bend_side", "line_pattern"]:
+                if str(patch.get(key, "")).strip():
+                    merged[key] = str(patch.get(key))
             merged["confidence"] = _round3(float(patch.get("confidence", merged.get("confidence", 0.65)) or 0.65))
             merged["binding_source"] = "vlm"
         patched.append(merged)
