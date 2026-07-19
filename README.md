@@ -132,6 +132,7 @@ $env:MODEL_VLM='your-vision-language-model'
 $env:RFS_REBUILD_LAYOUT_MODEL=$env:MODEL_VLM
 $env:RFS_REBUILD_CONTROL_MODEL=$env:MODEL_VLM
 $env:RFS_REBUILD_SEMANTIC_MODEL=$env:MODEL_VLM
+$env:RFS_REBUILD_DESIGN_MODEL=$env:MODEL_VLM
 
 # Required only for --asset-mode api slot-level image generation.
 $env:GEMINI_API_KEY=$env:API_KEY
@@ -146,6 +147,7 @@ rfs rebuild-editable `
   --reference "C:\path\figure.png" `
   --out "output\editable_rebuild" `
   --asset-mode api `
+  --design-plan-mode vlm `
   --layout-mode hybrid `
   --control-mode hybrid `
   --text-mode ocr `
@@ -186,9 +188,16 @@ arrows need correction, edit `reference_geometry.json` or
 `reference_controls_raw.json`; `reference_controls.json` is the routed
 PPT-ready controls contract.
 
+Global design planning writes `reference_logic_plan.json`,
+`reference_layer_plan.json`, `reference_generation_plan.json`, and
+`reference_flow_graph.json`. The flow graph is a semantic prior for control VLM
+arrow binding, while visible arrow pixels and overlays remain the final
+reference for editable connector geometry.
+
 Text reconstruction writes raw OCR, grouping, and ownership artifacts:
 `reference_text_geometry_raw.json`, `text_grouping_plan.json`,
-`text_grouping_report.json`, `text_layer_ownership_plan.json`, and
+`text_grouping_report.json`, `ocr_refinement_report.json`,
+`ocr_text_corrections.json`, `text_layer_ownership_plan.json`, and
 `text_layer_ownership_report.json`. `--text-grouping-mode off|heuristic|vlm|hybrid`
 controls whether OCR lines are merged locally or arbitrated by a VLM.
 
@@ -209,9 +218,9 @@ rfs rebuild-editable `
 ```
 
 To validate whether VLM planning is improving a given reference image, run the
-paired evaluator. It creates `case_heuristic` and `case_vlm` outputs under the
-same directory and defaults to `--asset-mode crop` so it does not spend image
-generation credits:
+paired evaluator. It creates `case_heuristic`, global-planning cases, and
+`case_vlm` outputs under the same directory and defaults to `--asset-mode crop`
+so it does not spend image generation credits:
 
 ```powershell
 rfs rebuild-editable-eval `

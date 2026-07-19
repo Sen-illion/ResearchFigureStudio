@@ -16,6 +16,12 @@ Offline engineering run:
 rfs rebuild-editable --reference input.png --out output\demo_placeholder --asset-mode placeholder --export-preview
 ```
 
+Global-planning inspection run:
+
+```powershell
+rfs rebuild-editable --reference input.png --out output\rebuild_check --design-plan-mode vlm --layout-mode hybrid --control-mode hybrid --asset-mode crop --text-mode ocr --json
+```
+
 Only rerun selected assets:
 
 ```powershell
@@ -44,6 +50,8 @@ rfs rebuild-editable --reference input.png --out output\demo --asset-mode api --
 --text-grouping-model    Optional VLM model for text grouping arbitration.
 --text-role-mode         heuristic | vlm. Default: vlm.
 --text-intelligence-mode off | heuristic | vlm. Default: vlm.
+--design-plan-mode      off | heuristic | vlm. Default: vlm.
+--design-plan-model     Optional VLM model for global reference logic planning.
 --layout-mode            heuristic | vlm | hybrid. Default: hybrid.
 --ocr-engine             paddle | easyocr | off. Default: paddle.
 --ocr-lang               en | ch | en_ch. Default: en_ch.
@@ -75,6 +83,7 @@ MODEL_VLM
 RFS_REBUILD_LAYOUT_MODEL    optional
 RFS_REBUILD_CONTROL_MODEL   optional
 RFS_REBUILD_SEMANTIC_MODEL  optional
+RFS_REBUILD_DESIGN_MODEL    optional
 RFS_TEXT_GROUPING_MODEL     optional
 RFS_REBUILD_CRITIC_MODEL    optional
 ```
@@ -88,6 +97,7 @@ $env:MODEL_VLM='your-vision-language-model'
 $env:RFS_REBUILD_LAYOUT_MODEL=$env:MODEL_VLM
 $env:RFS_REBUILD_CONTROL_MODEL=$env:MODEL_VLM
 $env:RFS_REBUILD_SEMANTIC_MODEL=$env:MODEL_VLM
+$env:RFS_REBUILD_DESIGN_MODEL=$env:MODEL_VLM
 $env:GEMINI_API_KEY=$env:API_KEY
 $env:GEMINI_GEN_IMG_URL='https://your-provider/v1beta/models/your-image-model:generateContent'
 ```
@@ -100,10 +110,17 @@ The workflow writes these files:
 
 ```text
 input_manifest.json
+reference_logic_plan.json
+reference_logic_plan.md
+reference_layer_plan.json
+reference_generation_plan.json
+reference_flow_graph.json
 reference_geometry.json
 reference_geometry_overlay.png
 reference_text_geometry_raw.json
 reference_text_geometry.json
+ocr_refinement_report.json
+ocr_text_corrections.json
 text_grouping_plan.json
 text_grouping_report.json
 text_layer_ownership_plan.json
@@ -127,7 +144,7 @@ editable_composition.pptx
 rebuild_preview.png or preview_export_error.txt
 ```
 
-`figure_program.json` is the PPT compiler source of truth. `reference_text_geometry_raw.json` stores raw line-level OCR, `text_grouping_plan.json` records line-to-paragraph grouping, and `reference_text_geometry.json` stores the final grouped OCR or fallback text geometry. `text_layer_ownership_report.json` records whether each OCR text region belongs in the editable PPT text layer, the raster asset layer, decorative asset text, or should be ignored. `reference_controls_raw.json` stores localized connector candidates before routing, while `reference_controls.json` stores the final routed editable connector contract. `slot_inventory.json` stores non-text visual asset slots.
+`reference_logic_plan.json` is the global VLM/heuristic design plan: narrative, reading order, layer classification, asset source policies, and flow graph. `figure_program.json` is the PPT compiler source of truth. `reference_text_geometry_raw.json` stores raw line-level OCR, `text_grouping_plan.json` records line-to-paragraph grouping, `ocr_refinement_report.json` records deterministic OCR corrections/low-confidence flags, and `reference_text_geometry.json` stores the final grouped/refined OCR or fallback text geometry. `text_layer_ownership_report.json` records whether each OCR text region belongs in the editable PPT text layer, the raster asset layer, decorative asset text, or should be ignored. `reference_controls_raw.json` stores localized connector candidates before routing, while `reference_controls.json` stores the final routed editable connector contract. `slot_inventory.json` stores non-text visual asset slots.
 
 ## Text Grouping And Layer Ownership
 
@@ -143,6 +160,11 @@ titles, arrows, legends, method labels, modality labels, and slot captions stay
 in the editable PPT text layer. Non-critical OCR text visually inside a raster
 slot can be assigned to `raster_asset_layer` so it is not duplicated as an
 editable textbox. The workflow does not mask or erase crop asset pixels.
+
+OCR refinement is conservative: raw OCR stays in
+`reference_text_geometry_raw.json`, while deterministic whitespace/common-token
+corrections and low-confidence flags are recorded in
+`ocr_refinement_report.json` and `ocr_text_corrections.json`.
 
 ## Compiled-Preview Visual Critic
 
@@ -172,6 +194,10 @@ most 20%. If a slot bbox changes, only that slot is regenerated or recopied.
 `--layout-mode hybrid` uses local CV candidates first and can accept a VLM layout planner when one is wired in. Without a VLM adapter, it falls back to heuristic layout and records that status in `reference_geometry.json`.
 
 `--control-mode hybrid` uses CV line detection plus fallback sequence connectors and can accept a VLM/control planner for source-target binding. Detected connector paths are written to `reference_controls_raw.json`; `reference_controls.json` records the routed PPT-ready arrows after `--arrow-style-mode` is applied.
+
+`--design-plan-mode vlm` runs before layout/control/text analysis. Its flow
+graph is passed to the control VLM as a semantic prior; visible arrow pixels and
+overlays still decide the final editable connector contract.
 
 Review overlays:
 
@@ -207,6 +233,10 @@ The evaluator writes:
 ```text
 rebuild_vlm_eval_summary.json
 case_heuristic/
+case_global_design/
+case_global_policy/
+case_global_flow/
+case_global_ocr/
 case_vlm/
 ```
 
