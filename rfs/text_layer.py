@@ -512,6 +512,8 @@ def build_text_layer(
     text_role_adapter: Callable[[str | Path, list[dict], dict, str | None], dict] | None = None,
     text_role_fallback_on_error: bool = False,
     text_grouping_mode: str = "heuristic",
+    text_grouping_model: str | None = None,
+    text_grouping_adapter: Callable | None = None,
 ) -> dict:
     """Build reference-first editable text artifacts and attach them to the program."""
 
@@ -540,6 +542,10 @@ def build_text_layer(
     grouped_ocr_regions, grouping_plan, grouping_report = group_text_regions(
         ocr_regions,
         mode=text_grouping_mode if ocr_regions else "off",
+        adapter=text_grouping_adapter,
+        reference_path=reference_path,
+        program=program,
+        model=text_grouping_model,
     )
     write_text_grouping_artifacts(out, raw_geometry, grouping_plan, grouping_report)
     regions = _merge_ocr_with_fallback(grouped_ocr_regions, fallback_regions)
@@ -599,7 +605,7 @@ def build_text_layer(
             "color_hex": region["color_hex"],
             "color_token_id": token_id,
             "bold": str(region.get("font_weight_guess") or "").lower() == "bold" or region["role"] in {"panel_title", "method_label", "modality_label"},
-            "align": "left" if region["role"] in {"modality_label", "trait_label", "arrow_label"} else "center",
+            "align": region.get("align") or ("left" if region["role"] in {"modality_label", "trait_label", "arrow_label"} else "center"),
             "font_family_guess": region.get("font_family_guess") or ("Microsoft YaHei" if any(ord(char) > 127 for char in str(region.get("text", ""))) else "Arial"),
             "font_weight_guess": region.get("font_weight_guess") or ("bold" if region["role"] in {"panel_title", "method_label", "modality_label"} else "regular"),
             "fit_strategy": "ocr_bbox_exact" if str(region.get("source", "")).startswith("reference_ocr") else "reference_geometry_bbox",

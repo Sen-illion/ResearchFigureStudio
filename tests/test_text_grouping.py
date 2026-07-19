@@ -1,6 +1,6 @@
 import unittest
 
-from rfs.text_grouping import group_text_regions_heuristic
+from rfs.text_grouping import group_text_regions, group_text_regions_heuristic
 
 
 def _region(text: str, text_id: str, x: float, y: float, w: float, h: float, target_id: str = "card_a", role: str = "body_label") -> dict:
@@ -67,6 +67,58 @@ class TextGroupingTests(unittest.TestCase):
         self.assertEqual(report["paragraph_group_count"], 0)
         self.assertEqual(len(grouped), 2)
         self.assertEqual({item["target_id"] for item in grouped}, {"card_a", "card_b"})
+
+    def test_vlm_grouping_uses_raw_ocr_union_not_vlm_bbox(self):
+        raw = [
+            _region("line one", "ocr_1", 0.10, 0.20, 0.20, 0.030),
+            _region("line two", "ocr_2", 0.101, 0.234, 0.22, 0.030),
+            _region("noise", "ocr_noise", 0.70, 0.80, 0.04, 0.012, role="free_text"),
+        ]
+
+        def fake_adapter(_reference, _raw_regions, _heuristic_regions, _program, _model):
+            return {
+                "summary": "fake grouping",
+                "groups": [{
+                    "group_id": "body_para",
+                    "ocr_member_ids": ["ocr_1", "ocr_2"],
+                    "role": "annotation",
+                    "align": "left",
+                    "bbox_percent": {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0},
+                    "confidence": 0.93,
+                    "reason": "two visible body lines",
+                }],
+                "ignored_ocr_ids": ["ocr_noise"],
+            }
+
+        grouped, plan, report = group_text_regions(raw, mode="vlm", adapter=fake_adapter, reference_path="reference.png", program={})
+
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(len(grouped), 1)
+        self.assertEqual(grouped[0]["id"], "body_para")
+        self.assertEqual(grouped[0]["role"], "annotation")
+        self.assertEqual(grouped[0]["align"], "left")
+        self.assertLess(grouped[0]["bbox_percent"]["x"], 0.105)
+        self.assertGreater(grouped[0]["bbox_percent"]["x"], 0.09)
+        self.assertLess(grouped[0]["bbox_percent"]["w"], 0.23)
+        self.assertEqual(plan["ignored_ocr_ids"], ["ocr_noise"])
+
+    def test_hybrid_grouping_falls_back_to_heuristic_when_vlm_fails(self):
+        raw = [
+            _region("first line", "ocr_1", 0.10, 0.20, 0.20, 0.030),
+            _region("second line", "ocr_2", 0.10, 0.234, 0.20, 0.030),
+        ]
+
+        def failing_adapter(*_args):
+            raise RuntimeError("grouping unavailable")
+
+        grouped, plan, report = group_text_regions(raw, mode="hybrid", adapter=failing_adapter, reference_path="reference.png", program={})
+
+        self.assertEqual(report["status"], "fallback_to_heuristic")
+        self.assertEqual(report["effective_mode"], "heuristic")
+        self.assertEqual(len(grouped), 1)
+        self.assertEqual(grouped[0]["ocr_member_ids"], ["ocr_1", "ocr_2"])
+        self.assertIn("grouping unavailable", report["warnings"][0])
+        self.assertEqual(plan["effective_mode"], "heuristic")
 
 
 if __name__ == "__main__":

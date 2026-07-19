@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from statistics import median
 from typing import Callable
+
+from .vlm_client import call_vlm_json, resolve_vlm_model
 
 from .utils import write_json
 
@@ -124,6 +128,176 @@ def _make_group(group_id: str, members: list[dict]) -> dict:
     return region
 
 
+def _object_brief(program: dict) -> dict:
+    def brief(items: list, keys: tuple[str, ...]) -> list[dict]:
+        result = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            result.append({key: item.get(key) for key in keys if key in item})
+        return result
+
+    return {
+        "panels": brief(program.get("panels", []), ("id", "title", "bbox_percent")),
+        "cards": brief(program.get("cards", []), ("id", "title", "bbox_percent")),
+        "slots": brief(program.get("slots", []), ("id", "paper_concept", "bbox_percent")),
+        "arrows": brief(program.get("arrows", []), ("id", "source_id", "target_id", "source", "target", "path_percent")),
+    }
+
+
+def _raw_ocr_brief(regions: list[dict]) -> list[dict]:
+    return [{
+        "id": item.get("id"),
+        "text": item.get("text"),
+        "role_guess": item.get("role"),
+        "target_id": item.get("target_id"),
+        "bbox_percent": item.get("bbox_percent"),
+        "font_size_pt": item.get("font_size_pt"),
+        "confidence": item.get("confidence"),
+    } for item in regions if isinstance(item, dict)]
+
+
+def _heuristic_group_brief(regions: list[dict]) -> list[dict]:
+    return [{
+        "id": item.get("id"),
+        "text": item.get("text"),
+        "ocr_member_ids": item.get("ocr_member_ids"),
+        "role": item.get("role"),
+        "target_id": item.get("target_id"),
+        "bbox_percent": item.get("bbox_percent"),
+    } for item in regions if isinstance(item, dict)]
+
+
+def _call_vlm_grouping(
+    reference_path: str | Path,
+    raw_regions: list[dict],
+    heuristic_regions: list[dict],
+    program: dict,
+    model: str | None = None,
+) -> dict:
+    model_name = resolve_vlm_model("RFS_TEXT_GROUPING_MODEL", "RFS_TEXT_ROLE_MODEL", explicit_model=model)
+    prompt = f"""
+You are grouping OCR text lines for an editable PowerPoint reconstruction.
+Only output JSON. Do not output markdown, prose, Python, SVG, or PPT code.
+
+Task:
+- Decide which raw OCR line ids belong to the same visible text paragraph/label.
+- Decide whether a raw OCR line should be ignored because it is decorative, unreadable noise, or belongs only inside a raster asset.
+- You may assign role and align, but you may NOT invent coordinates.
+- Bboxes will be computed by code as the union of raw OCR boxes.
+- Do not change text content.
+
+Return schema:
+{{
+  "summary": "...",
+  "groups": [
+    {{"group_id":"group_1","ocr_member_ids":["ref_text_ocr_001"],"role":"panel_title|section_title|body_label|slot_caption|free_text|annotation|arrow_label|legend_label|method_label|modality_label|trait_label","align":"left|center|right","ignore":false,"confidence":0.0,"reason":"..."}}
+  ],
+  "ignored_ocr_ids": ["ref_text_ocr_999"],
+  "warnings": []
+}}
+
+Raw OCR regions:
+{json.dumps(_raw_ocr_brief(raw_regions), ensure_ascii=False)}
+
+Heuristic groups:
+{json.dumps(_heuristic_group_brief(heuristic_regions), ensure_ascii=False)}
+
+Objects:
+{json.dumps(_object_brief(program), ensure_ascii=False)}
+""".strip()
+    result = call_vlm_json(prompt, [reference_path], model=model_name)
+    result.setdefault("_vlm_model", model_name)
+    return result
+
+
+def _coerce_align(value: object) -> str | None:
+    text = str(value or "").strip().lower()
+    if text in {"left", "center", "right"}:
+        return text
+    return None
+
+
+def _apply_grouping_plan(raw_regions: list[dict], raw_plan: dict) -> tuple[list[dict], dict, list[str]]:
+    raw_by_id = {str(item.get("id") or ""): item for item in raw_regions}
+    used: set[str] = set()
+    ignored = {str(item) for item in raw_plan.get("ignored_ocr_ids", []) if str(item).strip()}
+    warnings: list[str] = []
+    planned_regions: list[dict] = []
+    normalized_groups = []
+    for index, item in enumerate(raw_plan.get("groups", []) if isinstance(raw_plan.get("groups"), list) else [], start=1):
+        if not isinstance(item, dict):
+            continue
+        member_ids = [str(value) for value in item.get("ocr_member_ids", []) if str(value) in raw_by_id]
+        member_ids = [value for value in member_ids if value not in ignored and value not in used]
+        if not member_ids:
+            continue
+        if bool(item.get("ignore")):
+            ignored.update(member_ids)
+            used.update(member_ids)
+            continue
+        members = [raw_by_id[value] for value in member_ids]
+        if len(members) == 1:
+            region = dict(members[0])
+            region.setdefault("ocr_member_ids", member_ids)
+            region.setdefault("ocr_member_count", 1)
+            region["grouping_source"] = "vlm_singleton"
+        else:
+            region = _make_group(str(item.get("group_id") or f"ref_text_vlm_group_{index:03d}"), members)
+            region["source"] = "reference_ocr_paragraph_group_vlm"
+            region["grouping_source"] = "vlm"
+        if str(item.get("role") or "").strip():
+            region["role"] = str(item.get("role"))
+            region["ocr_role_guess"] = region.get("ocr_role_guess") or members[0].get("role")
+        align = _coerce_align(item.get("align"))
+        if align:
+            region["align"] = align
+        region["grouping_confidence"] = item.get("confidence")
+        region["grouping_reason"] = item.get("reason")
+        planned_regions.append(region)
+        used.update(member_ids)
+        normalized_groups.append({
+            "group_id": region["id"],
+            "ocr_member_ids": member_ids,
+            "role": region.get("role"),
+            "align": region.get("align"),
+            "bbox_percent": region.get("bbox_percent"),
+            "confidence": item.get("confidence"),
+            "reason": item.get("reason"),
+        })
+
+    for raw in raw_regions:
+        rid = str(raw.get("id") or "")
+        if rid in used or rid in ignored:
+            continue
+        singleton = dict(raw)
+        singleton.setdefault("ocr_member_ids", [rid])
+        singleton.setdefault("ocr_member_count", 1)
+        singleton.setdefault("grouping_source", "vlm_unmentioned_singleton")
+        planned_regions.append(singleton)
+        normalized_groups.append({
+            "group_id": singleton["id"],
+            "ocr_member_ids": [rid],
+            "role": singleton.get("role"),
+            "align": singleton.get("align"),
+            "bbox_percent": singleton.get("bbox_percent"),
+            "confidence": None,
+            "reason": "raw OCR id was not mentioned by VLM plan",
+        })
+    if not planned_regions and raw_regions:
+        warnings.append("vlm_grouping_plan_produced_no_regions")
+    planned_regions.sort(key=lambda item: _line_sort_key(item) if isinstance(item.get("bbox_percent"), dict) else (1.0, 1.0))
+    plan = {
+        "summary": str(raw_plan.get("summary") or "VLM text grouping plan."),
+        "mode": "vlm",
+        "vlm_model": raw_plan.get("_vlm_model"),
+        "groups": normalized_groups,
+        "ignored_ocr_ids": sorted(ignored),
+        "warnings": list(raw_plan.get("warnings", [])) + warnings if isinstance(raw_plan.get("warnings", []), list) else warnings,
+    }
+    return planned_regions, plan, warnings
+
+
 def group_text_regions_heuristic(regions: list[dict]) -> tuple[list[dict], dict, dict]:
     eligible = [item for item in regions if isinstance(item, dict) and isinstance(item.get("bbox_percent"), dict) and _eligible_for_heuristic_grouping(item)]
     ineligible = [item for item in regions if item not in eligible]
@@ -186,7 +360,9 @@ def group_text_regions(
     regions: list[dict],
     mode: str = "heuristic",
     adapter: Callable | None = None,
-    **_kwargs,
+    reference_path: str | Path | None = None,
+    program: dict | None = None,
+    model: str | None = None,
 ) -> tuple[list[dict], dict, dict]:
     effective_mode = str(mode or "heuristic").lower()
     if effective_mode == "off" or not regions:
@@ -202,9 +378,54 @@ def group_text_regions(
             "warnings": [],
         }
         return regions, plan, report
-    if effective_mode != "heuristic":
-        raise ValueError(f"Unsupported text grouping mode for this build: {mode}")
-    return group_text_regions_heuristic(regions)
+    heuristic_regions, heuristic_plan, heuristic_report = group_text_regions_heuristic(regions)
+    if effective_mode == "heuristic":
+        return heuristic_regions, heuristic_plan, heuristic_report
+    if effective_mode not in {"vlm", "hybrid"}:
+        raise ValueError(f"Unsupported text grouping mode: {mode}")
+
+    try:
+        if adapter:
+            raw_plan = adapter(reference_path, regions, heuristic_regions, program or {}, model)
+        else:
+            if reference_path is None:
+                raise RuntimeError("reference_path is required for VLM text grouping")
+            raw_plan = _call_vlm_grouping(reference_path, regions, heuristic_regions, program or {}, model=model)
+        vlm_regions, plan, warnings = _apply_grouping_plan(regions, raw_plan if isinstance(raw_plan, dict) else {})
+        if not vlm_regions and regions:
+            raise RuntimeError("VLM text grouping produced no usable regions")
+        report = {
+            "summary": "Text grouping report.",
+            "mode": effective_mode,
+            "effective_mode": "vlm",
+            "status": "pass",
+            "raw_region_count": len(regions),
+            "grouped_region_count": len(vlm_regions),
+            "paragraph_group_count": len([item for item in vlm_regions if int(item.get("ocr_member_count") or 1) > 1]),
+            "single_region_count": len([item for item in vlm_regions if int(item.get("ocr_member_count") or 1) == 1]),
+            "warnings": warnings,
+            "heuristic_group_count": heuristic_report.get("paragraph_group_count", 0),
+            "vlm_model": plan.get("vlm_model"),
+        }
+        plan["mode"] = effective_mode
+        return vlm_regions, plan, report
+    except Exception as exc:
+        if effective_mode == "vlm":
+            fallback_status = "fallback_to_heuristic"
+        else:
+            fallback_status = "fallback_to_heuristic"
+        heuristic_plan = dict(heuristic_plan)
+        heuristic_plan["mode"] = effective_mode
+        heuristic_plan["effective_mode"] = "heuristic"
+        heuristic_plan.setdefault("warnings", [])
+        heuristic_plan["warnings"].append(f"vlm_grouping_failed:{exc}")
+        heuristic_report = dict(heuristic_report)
+        heuristic_report["mode"] = effective_mode
+        heuristic_report["effective_mode"] = "heuristic"
+        heuristic_report["status"] = fallback_status
+        heuristic_report.setdefault("warnings", [])
+        heuristic_report["warnings"].append(f"vlm_grouping_failed:{exc}")
+        return heuristic_regions, heuristic_plan, heuristic_report
 
 
 def write_text_grouping_artifacts(out_dir, raw_geometry: dict, plan: dict, report: dict) -> None:

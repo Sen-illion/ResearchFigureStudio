@@ -128,6 +128,8 @@ def build_parser() -> argparse.ArgumentParser:
     rebuild.add_argument("--economy-mode", dest="economy_mode", action="store_true", default=True, help="Reuse accepted/passing assets and generate each failed slot once. Enabled by default.")
     rebuild.add_argument("--no-economy-mode", dest="economy_mode", action="store_false", help="Disable economy reuse decisions.")
     rebuild.add_argument("--text-mode", choices=["ocr", "manual", "off"], default="ocr", help="Editable text extraction mode. Default: ocr.")
+    rebuild.add_argument("--text-grouping-mode", choices=["off", "heuristic", "vlm", "hybrid"], default="heuristic", help="OCR line grouping mode before text role classification. Default: heuristic.")
+    rebuild.add_argument("--text-grouping-model", help="Optional VLM model for --text-grouping-mode vlm/hybrid. Defaults to RFS_TEXT_GROUPING_MODEL/RFS_TEXT_ROLE_MODEL/MODEL_VLM.")
     rebuild.add_argument("--text-role-mode", choices=["heuristic", "vlm"], default="vlm", help="Text role classification source. Default: vlm with heuristic fallback.")
     rebuild.add_argument("--text-role-model", help="Optional VLM model for --text-role-mode vlm. Defaults to RFS_TEXT_ROLE_MODEL/MODEL_VLM.")
     rebuild.add_argument("--text-intelligence-mode", choices=["off", "heuristic", "vlm"], default="vlm", help="Text intelligence source for font style, relationships, and layout intent reports. Default: vlm with heuristic fallback.")
@@ -185,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _print_human(data: dict) -> None:
     if "ok" in data:
         print(f"ok: {data['ok']}")
-    for key in ["out_dir", "approved_image", "thresholds_met", "stop_reason", "rounds_completed", "online_judge_model", "frozen_judge_model", "weak_judge_isolation", "pptx", "pdf", "png", "preview", "asset_count", "slot_count", "slot_source", "asset_mode", "asset_workers", "asset_retries", "economy_mode", "api_requests_attempted", "text_count", "connector_count", "text_mode", "layout_mode", "control_mode", "compile_only", "candidates_per_slot", "asset_review_mode", "locator_mode", "control_localizer_mode", "arrow_style_mode", "prompt_plan_mode", "prompt_plan_workers", "complexity_profile", "critic_mode", "critic_iterations", "text_extractor_mode", "ocr_engine", "ocr_lang", "text_role_mode", "text_role_effective_mode", "text_role_model", "text_intelligence_mode", "text_intelligence_effective_mode", "text_intelligence_model"]:
+    for key in ["out_dir", "approved_image", "thresholds_met", "stop_reason", "rounds_completed", "online_judge_model", "frozen_judge_model", "weak_judge_isolation", "pptx", "pdf", "png", "preview", "asset_count", "slot_count", "slot_source", "asset_mode", "asset_workers", "asset_retries", "economy_mode", "api_requests_attempted", "text_count", "connector_count", "text_mode", "layout_mode", "control_mode", "compile_only", "candidates_per_slot", "asset_review_mode", "locator_mode", "control_localizer_mode", "arrow_style_mode", "prompt_plan_mode", "prompt_plan_workers", "complexity_profile", "critic_mode", "critic_iterations", "text_extractor_mode", "ocr_engine", "ocr_lang", "text_grouping_mode", "text_grouping_effective_mode", "text_grouping_model", "text_role_mode", "text_role_effective_mode", "text_role_model", "text_intelligence_mode", "text_intelligence_effective_mode", "text_intelligence_model"]:
         if key in data:
             print(f"{key}: {data[key]}")
     if data.get("presentations_qa"):
@@ -246,6 +248,8 @@ def main(argv: list[str] | None = None) -> int:
                 text_extractor_mode=args.text_extractor_mode,
                 ocr_engine=args.ocr_engine,
                 ocr_lang=args.ocr_lang,
+                text_grouping_mode=args.text_grouping_mode,
+                text_grouping_model=args.text_grouping_model,
                 text_role_mode=args.text_role_mode,
                 text_role_model=args.text_role_model,
                 presentations_qa=args.presentations_qa,
