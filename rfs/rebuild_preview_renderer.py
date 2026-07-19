@@ -101,6 +101,39 @@ def _draw_arrow(draw: ImageDraw.ImageDraw, arrow: dict, canvas_w: int, canvas_h:
     draw.line(points, fill=color, width=line_width, joint="curve")
 
 
+def _draw_card(draw: ImageDraw.ImageDraw, card: dict, canvas_w: int, canvas_h: int) -> None:
+    bbox = card.get("bbox_percent")
+    if not isinstance(bbox, dict):
+        return
+    x, y, w, h = _bbox_px(bbox, canvas_w, canvas_h)
+    stroke = _hex_color(card.get("stroke_color"), "#59AFCB")
+    fill = None if float(card.get("fill_transparency", 1.0) or 1.0) >= 1.0 else _hex_color(card.get("fill_color"), "#FFFFFF")
+    line_width = max(1, int(round(float(card.get("stroke_width_pt") or 1.5) * canvas_h / 360.0)))
+    dash_style = str(card.get("dash_style") or "solid").lower()
+    radius = max(0, int(round(float(card.get("corner_radius") or 0.0) * min(w, h))))
+    shape_kind = str(card.get("shape_kind") or "rounded_rect").lower()
+    rect = (x, y, x + w, y + h)
+    if dash_style in {"dash", "dashed", "dotted"}:
+        dash_len = max(4, line_width * (2 if dash_style == "dotted" else 5))
+        gap = max(3, line_width * 3)
+        for start, end in [((x, y), (x + w, y)), ((x + w, y), (x + w, y + h)), ((x + w, y + h), (x, y + h)), ((x, y + h), (x, y))]:
+            sx, sy = start
+            ex, ey = end
+            length = max(abs(ex - sx), abs(ey - sy))
+            step_x = 0 if length == 0 else (ex - sx) / length
+            step_y = 0 if length == 0 else (ey - sy) / length
+            pos = 0
+            while pos < length:
+                seg_end = min(length, pos + dash_len)
+                draw.line((sx + step_x * pos, sy + step_y * pos, sx + step_x * seg_end, sy + step_y * seg_end), fill=stroke, width=line_width)
+                pos += dash_len + gap
+        return
+    if shape_kind == "rect":
+        draw.rectangle(rect, fill=fill, outline=stroke, width=line_width)
+    else:
+        draw.rounded_rectangle(rect, radius=radius, fill=fill, outline=stroke, width=line_width)
+
+
 def render_rebuild_preview(program: dict, out_dir: str | Path, preview_path: str | Path | None = None) -> Path:
     out = Path(out_dir)
     canvas = program.get("canvas", {}) if isinstance(program.get("canvas"), dict) else {}
@@ -123,6 +156,10 @@ def render_rebuild_preview(program: dict, out_dir: str | Path, preview_path: str
         fill = _hex_color(local_style.get("fill_color"), palette[idx % len(palette)])
         stroke = _hex_color(local_style.get("stroke_color"), "#FFFFFF")
         draw.rounded_rectangle((x, y, x + w, y + h), radius=max(2, min(12, h // 18)), fill=fill, outline=stroke, width=2)
+
+    for card in sorted(program.get("cards", []), key=lambda item: int(item.get("z_index") or 12)):
+        if isinstance(card, dict):
+            _draw_card(draw, card, width, height)
 
     asset_by_id = {str(asset.get("id")): asset for asset in program.get("assets", []) if isinstance(asset, dict)}
     for slot in sorted(program.get("slots", []), key=lambda item: int(item.get("z_index") or 20)):

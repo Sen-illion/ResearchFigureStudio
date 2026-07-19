@@ -491,13 +491,27 @@ def _make_valid_output(root: Path, asset_count: int = 25) -> None:
         "color_tokens": color_tokens,
     })
     (root / "style_sheet.md").write_text("# Summary\nStyle sheet.\n", encoding="utf-8")
-    _write_json(root / "layout_plan.json", {"summary": "Layout plan.", "panels": panels, "slots": slots, "arrows": arrows, "control_shapes": control_items})
+    cards = [{
+        "id": "card_reference_group",
+        "semantic_role": "outer_group_boundary",
+        "bbox_percent": {"x": 0.04, "y": 0.04, "w": 0.86, "h": 0.46},
+        "shape_kind": "rounded_rect",
+        "stroke_color": "#59AFCB",
+        "stroke_width_pt": 1.5,
+        "dash_style": "dash",
+        "fill_color": "#FFFFFF",
+        "fill_transparency": 1.0,
+        "corner_radius": 0.08,
+        "editable_in": "pptx",
+    }]
+    _write_json(root / "layout_plan.json", {"summary": "Layout plan.", "panels": panels, "cards": cards, "slots": slots, "arrows": arrows, "control_shapes": control_items})
     _write_json(root / "figure_program.json", {
         "summary": "Figure program.",
         "canvas": {},
         "locator": {"mode": "heuristic", "reference_path": "inputs/reference.png"},
         "style": {"reference_palette": reference_palette, "slot_frame_policy": "frameless_slot", "color_tokens": color_tokens, "reference_style_profile_path": "reference_style_profile.json", "arrow_style_profile_path": "arrow_style_profile.json"},
         "panels": panels,
+        "cards": cards,
         "slots": slots,
         "assets": [{"id": item["asset_id"], "slot_id": item["slot_id"], "reference_crop_path": f"reference_slot_crops/{item['slot_id']}.png", "visual_spec_id": f"visual_spec_{item['slot_id']}"} for item in asset_items],
         "labels": labels,
@@ -580,6 +594,19 @@ class ValidatorTests(unittest.TestCase):
             _make_valid_output(root)
             result = validate_output(root)
             self.assertTrue(result["ok"], result["errors"])
+
+    def test_invalid_card_contract_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _make_valid_output(root)
+            program = json.loads((root / "figure_program.json").read_text(encoding="utf-8"))
+            program["cards"][0]["stroke_color"] = "blue"
+            program["assets"].append({"id": "card_reference_group", "slot_id": "card_reference_group", "reference_crop_path": "reference_slot_crops/slot_00.png", "visual_spec_id": "visual_spec_slot_00"})
+            _write_json(root / "figure_program.json", program)
+            result = validate_output(root)
+            self.assertFalse(result["ok"])
+            self.assertTrue(any("invalid stroke_color" in error for error in result["errors"]))
+            self.assertTrue(any("incorrectly references a card frame" in error for error in result["errors"]))
 
     def test_low_fill_fails(self):
         with tempfile.TemporaryDirectory() as tmp:

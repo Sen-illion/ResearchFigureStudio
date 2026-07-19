@@ -72,6 +72,15 @@ def build_rebuild_vlm_validation_report(
         for item in panels + slots + cards + legends
         if bool(item.get("bbox_was_clamped"))
     ]
+    cards_missing_style = [
+        str(item.get("id") or "")
+        for item in cards
+        if not str(item.get("stroke_color") or "").strip()
+        or not str(item.get("stroke_width_pt") or "").strip()
+        or not str(item.get("dash_style") or "").strip()
+        or not str(item.get("fill_color") or "").strip()
+        or not str(item.get("shape_kind") or "").strip()
+    ]
     invalid_arrows = []
     for arrow in arrows:
         source = str(arrow.get("source_id") or arrow.get("source") or "")
@@ -94,6 +103,8 @@ def build_rebuild_vlm_validation_report(
         warnings.append(f"{len(invalid_layout_bboxes)} invalid layout bbox(es)")
     if clamped_bboxes:
         warnings.append(f"{len(clamped_bboxes)} VLM bbox(es) were clamped")
+    if cards_missing_style:
+        warnings.append(f"{len(cards_missing_style)} card frame(s) missing style fields")
     if invalid_arrows:
         warnings.append(f"{len(invalid_arrows)} invalid arrow(s)")
     if invalid_semantic_types:
@@ -121,6 +132,8 @@ def build_rebuild_vlm_validation_report(
             "vlm_model": reference_geometry.get("vlm_model"),
             "panel_count": len(panels),
             "card_count": len(cards),
+            "cards_missing_style_count": len(cards_missing_style),
+            "cards_missing_style_ids": cards_missing_style,
             "slot_count": len(slots),
             "legend_region_count": len(legends),
             "invalid_bbox_ids": invalid_layout_bboxes,

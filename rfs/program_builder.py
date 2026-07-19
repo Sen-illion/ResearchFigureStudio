@@ -65,8 +65,9 @@ def _control_record_from_arrow(arrow: dict) -> dict:
 
 def build_figure_program(paper_brief: dict, inventory: dict, style: dict, out_dir: str | Path, layout_plan: dict) -> dict:
     panels = layout_plan["panels"]
+    cards = layout_plan.get("cards", [])
     slots = layout_plan["slots"]
-    objects_by_id = {item.get("id"): item for item in panels + slots if isinstance(item, dict)}
+    objects_by_id = {item.get("id"): item for item in panels + cards + slots if isinstance(item, dict)}
     color_tokens = style.get("color_tokens", []) if isinstance(style.get("color_tokens"), list) else []
     default_arrow_token = next((str(item.get("token_id")) for item in color_tokens if "arrow" in str(item.get("usage", "")).lower() or "connector" in str(item.get("usage", "")).lower()), "")
     if not default_arrow_token and color_tokens:
@@ -147,6 +148,7 @@ def build_figure_program(paper_brief: dict, inventory: dict, style: dict, out_di
             "reference_path": layout_plan.get("reference_path") or inventory.get("reference_path"),
         },
         "panels": panels,
+        "cards": cards,
         "slots": slots,
         "assets": assets,
         "labels": labels,

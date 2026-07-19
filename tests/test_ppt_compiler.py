@@ -8,6 +8,46 @@ from rfs.ppt_compiler import compile_ppt
 
 
 class PptCompilerArrowTests(unittest.TestCase):
+    def test_card_frames_are_rendered_as_editable_ppt_shapes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            program = {
+                "canvas": {"width_in": 10.0, "height_in": 5.0, "background": "#FFFFFF"},
+                "style": {"palette": ["#FFFFFF", "#59AFCB"]},
+                "panels": [],
+                "cards": [{
+                    "id": "card_sft",
+                    "semantic_role": "subcard_frame",
+                    "bbox_percent": {"x": 0.12, "y": 0.26, "w": 0.32, "h": 0.18},
+                    "shape_kind": "rounded_rect",
+                    "fill_color": "#FFFFFF",
+                    "fill_transparency": 1.0,
+                    "stroke_color": "#59AFCB",
+                    "stroke_width_pt": 1.5,
+                    "dash_style": "dash",
+                    "corner_radius": 0.08,
+                    "editable_in": "pptx",
+                    "z_index": 12,
+                }],
+                "slots": [],
+                "arrows": [],
+                "labels": [],
+                "groups": [],
+                "export_targets": [{"type": "pptx", "path": "editable_composition.pptx"}],
+            }
+
+            pptx = compile_ppt(program, out)
+            self.assertTrue(pptx.exists())
+
+            report = json.loads((out / "composition_quality_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["cards"][0]["card_id"], "card_sft")
+            self.assertEqual(report["cards"][0]["dash_style"], "dash")
+
+            with zipfile.ZipFile(pptx) as archive:
+                slide_xml = archive.read("ppt/slides/slide1.xml").decode("utf-8")
+            self.assertIn('prst="roundRect"', slide_xml)
+            self.assertIn("prstDash", slide_xml)
+
     def test_multisegment_and_dashed_arrows_are_rendered_as_ppt_connectors(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

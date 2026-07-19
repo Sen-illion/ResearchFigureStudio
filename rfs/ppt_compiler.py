@@ -67,6 +67,31 @@ def _add_round_rect(slide, x: float, y: float, w: float, h: float, fill: str, st
     return shape
 
 
+def _add_card_frame(slide, card: dict, width_in: float, height_in: float):
+    x, y, w, h = pct_to_inches(card["bbox_percent"], width_in, height_in)
+    shape_kind = str(card.get("shape_kind") or "rounded_rect").lower()
+    shape_type = MSO_SHAPE.RECTANGLE if shape_kind == "rect" else MSO_SHAPE.ROUNDED_RECTANGLE
+    shape = slide.shapes.add_shape(shape_type, Inches(x), Inches(y), Inches(w), Inches(h))
+
+    if float(card.get("fill_transparency", 1.0)) >= 1.0:
+        shape.fill.background()
+    else:
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = _rgb(str(card.get("fill_color") or "#FFFFFF"))
+
+    shape.line.color.rgb = _rgb(str(card.get("stroke_color") or "#59AFCB"))
+    shape.line.width = Pt(float(card.get("stroke_width_pt") or 1.5))
+
+    dash_style = str(card.get("dash_style") or "").lower()
+    if dash_style in {"dash", "dashed"}:
+        shape.line.dash_style = MSO_LINE_DASH_STYLE.DASH
+    elif dash_style in {"dot", "dotted"}:
+        shape.line.dash_style = getattr(MSO_LINE_DASH_STYLE, "ROUND_DOT", MSO_LINE_DASH_STYLE.DASH)
+
+    shape.shadow.inherit = False
+    return shape
+
+
 def _add_label(slide, text: str, x: float, y: float, w: float, h: float, font_size: float = 9, bold: bool = False, align=PP_ALIGN.CENTER, color: str = "#163B4D", font_family: str | None = None):
     box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
     _set_text(box, text, font_size=font_size, bold=bold, color=color, align=align, font_family=font_family)
@@ -221,6 +246,7 @@ def _align_from_text_item(item: dict):
 
 def _object_map(program: dict) -> dict[str, dict]:
     objects = {panel["id"]: panel for panel in program.get("panels", [])}
+    objects.update({card["id"]: card for card in program.get("cards", []) if isinstance(card, dict) and card.get("id")})
     objects.update({slot["id"]: slot for slot in program.get("slots", [])})
     return objects
 
@@ -490,6 +516,26 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
             font_family=str(title_text_item.get("font_family_guess") or "") if title_text_item else None,
         )
 
+    rendered_cards = []
+    for card in sorted(program.get("cards", []), key=lambda item: int(item.get("z_index", 12))):
+        if not isinstance(card, dict) or not isinstance(card.get("bbox_percent"), dict):
+            continue
+        _add_card_frame(slide, card, width_in, height_in)
+        rendered_cards.append({
+            "card_id": card.get("id"),
+            "semantic_role": card.get("semantic_role"),
+            "shape_kind": card.get("shape_kind", "rounded_rect"),
+            "bbox_percent": card.get("bbox_percent"),
+            "stroke_color": card.get("stroke_color", "#59AFCB"),
+            "stroke_width_pt": float(card.get("stroke_width_pt") or 1.5),
+            "dash_style": card.get("dash_style", "solid"),
+            "fill_color": card.get("fill_color", "#FFFFFF"),
+            "fill_transparency": float(card.get("fill_transparency", 1.0)),
+            "editable_in": "pptx",
+            "render_policy": "ppt_shape_not_image_asset",
+            "status": "ok",
+        })
+
     rendered_arrows = _draw_program_arrows(slide, program, width_in, height_in)
 
     # Slot image layer and editable captions.
@@ -659,6 +705,7 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
             "caption_inside_image_slot_allowed": False,
         },
         "slots": composition_items,
+        "cards": rendered_cards,
         "arrows": rendered_arrows,
         "text": rendered_text_items,
     })

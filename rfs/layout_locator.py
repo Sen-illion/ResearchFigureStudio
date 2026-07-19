@@ -57,6 +57,55 @@ def _clean_panel_bbox(bbox: dict[str, Any]) -> dict[str, float]:
     return {"x": round(x, 4), "y": round(y, 4), "w": round(w, 4), "h": round(h, 4)}
 
 
+def _clean_card_record(card: dict, index: int) -> dict | None:
+    if not isinstance(card, dict) or not isinstance(card.get("bbox_percent"), dict):
+        return None
+    dash_style = str(card.get("dash_style") or "solid").lower()
+    if dash_style == "dashed":
+        dash_style = "dash"
+    if dash_style not in {"solid", "dash", "dotted"}:
+        dash_style = "solid"
+    shape_kind = str(card.get("shape_kind") or "rounded_rect").lower()
+    if shape_kind not in {"rounded_rect", "rect"}:
+        shape_kind = "rounded_rect"
+    try:
+        fill_transparency = max(0.0, min(1.0, float(card.get("fill_transparency", 1.0))))
+    except Exception:
+        fill_transparency = 1.0
+    try:
+        stroke_width = max(0.1, float(card.get("stroke_width_pt", 1.5)))
+    except Exception:
+        stroke_width = 1.5
+    try:
+        corner_radius = float(card.get("corner_radius", 0.08) or 0.0)
+    except Exception:
+        corner_radius = 0.08
+    try:
+        confidence = float(card.get("confidence", 0.75) or 0.0)
+    except Exception:
+        confidence = 0.75
+    try:
+        z_index = int(card.get("z_index", 12) or 12)
+    except Exception:
+        z_index = 12
+    return {
+        "id": str(card.get("id") or f"card_{index:02d}"),
+        "semantic_role": str(card.get("semantic_role") or "subcard_frame"),
+        "bbox_percent": _clean_panel_bbox(card["bbox_percent"]),
+        "panel_id": str(card.get("panel_id") or ""),
+        "shape_kind": shape_kind,
+        "stroke_color": str(card.get("stroke_color") or "#59AFCB"),
+        "stroke_width_pt": stroke_width,
+        "dash_style": dash_style,
+        "fill_color": str(card.get("fill_color") or "#FFFFFF"),
+        "fill_transparency": fill_transparency,
+        "corner_radius": corner_radius,
+        "editable_in": "pptx",
+        "z_index": z_index,
+        "confidence": confidence,
+    }
+
+
 def _slot_from_inventory(slot: dict, bbox: dict | None = None) -> dict:
     merged = dict(slot)
     if bbox is not None:
@@ -124,6 +173,7 @@ def _heuristic_layout(inventory: dict) -> dict:
         "control_localizer": inventory.get("control_localizer"),
         "reference_path": inventory.get("reference_path"),
         "panels": sorted(panel_items, key=lambda item: (item["bbox_percent"]["y"], item["bbox_percent"]["x"])),
+        "cards": [item for idx, card in enumerate(inventory.get("cards") or [], start=1) if (item := _clean_card_record(card, idx))],
         "slots": [_slot_from_inventory(slot) for slot in inventory["slots"]],
         "arrows": inventory.get("controls") or inventory.get("ppt_arrows") or _default_arrows(panel_items),
         "control_shapes": inventory.get("controls") or [],
@@ -321,6 +371,7 @@ Important constraints:
 - Use 25-50 slots; keep all slots from the input list.
 - Preserve the reference image's main flow direction, macro panel positions, resource library position, branch layout, and visual density.
 - Labels, formulas, arrows, panels, and groups must be editable in pptx.
+- Hollow rectangles, rounded rectangles, dashed group boundaries, metric badges, and legend frames must be cards, not slots.
 - Fit policy must be contain_no_crop for every image slot.
 
 Return schema:
@@ -328,6 +379,20 @@ Return schema:
   "summary": "...",
   "locator_mode": "vlm",
   "panels": [{{"id":"...","title":"...","bbox_percent":{{"x":0,"y":0,"w":0.1,"h":0.1}},"editable_in":"pptx"}}],
+  "cards": [{{
+    "id":"...",
+    "semantic_role":"subcard_frame|outer_group_boundary|metric_badge|legend_frame",
+    "bbox_percent":{{"x":0,"y":0,"w":0.1,"h":0.1}},
+    "panel_id":"...",
+    "shape_kind":"rounded_rect|rect",
+    "stroke_color":"#59AFCB",
+    "stroke_width_pt":1.5,
+    "dash_style":"solid|dash|dotted",
+    "fill_color":"#FFFFFF",
+    "fill_transparency":1.0,
+    "corner_radius":0.08,
+    "confidence":0.0
+  }}],
   "slots": [{{"id":"input slot id","bbox_percent":{{"x":0,"y":0,"w":0.1,"h":0.1}},"z_index":20}}],
   "arrows": [{{"id":"...","source":"slot or panel id","target":"slot or panel id","type":"straight|elbow|custom_bus","path_percent":[[0.1,0.2],[0.3,0.2]],"label":"","editable_in":"pptx"}}],
   "layer_order": ["slot id", "slot id"]
@@ -383,6 +448,12 @@ def _merge_locator_output(raw_plan: dict, inventory: dict) -> dict:
     if not panels:
         panels = _heuristic_layout(inventory)["panels"]
 
+    cards = []
+    for idx, card in enumerate(raw_plan.get("cards", []) or [], start=1):
+        record = _clean_card_record(card, idx)
+        if record:
+            cards.append(record)
+
     arrows = []
     for arrow in raw_plan.get("arrows", []):
         if not isinstance(arrow, dict):
@@ -407,6 +478,7 @@ def _merge_locator_output(raw_plan: dict, inventory: dict) -> dict:
         "control_localizer": inventory.get("control_localizer"),
         "reference_path": inventory.get("reference_path"),
         "panels": panels,
+        "cards": cards,
         "slots": slots,
         "arrows": arrows,
         "control_shapes": inventory.get("controls") or [],
