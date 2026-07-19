@@ -362,6 +362,60 @@ def _crop_reference(reference_path: Path, out_path: Path, bbox_percent: dict) ->
     return out_path
 
 
+def _bbox_contains(outer: dict, inner: dict, tolerance: float = 0.0) -> bool:
+    ox0, oy0 = float(outer["x"]) - tolerance, float(outer["y"]) - tolerance
+    ox1 = float(outer["x"]) + float(outer["w"]) + tolerance
+    oy1 = float(outer["y"]) + float(outer["h"]) + tolerance
+    ix0, iy0 = float(inner["x"]), float(inner["y"])
+    ix1 = ix0 + float(inner["w"])
+    iy1 = iy0 + float(inner["h"])
+    return ox0 <= ix0 <= ox1 and oy0 <= iy0 <= oy1 and ox0 <= ix1 <= ox1 and oy0 <= iy1 <= oy1
+
+
+def _bbox_overlap_ratio(a: dict, b: dict) -> float:
+    ax0, ay0 = float(a["x"]), float(a["y"])
+    ax1, ay1 = ax0 + float(a["w"]), ay0 + float(a["h"])
+    bx0, by0 = float(b["x"]), float(b["y"])
+    bx1, by1 = bx0 + float(b["w"]), by0 + float(b["h"])
+    ix = max(0.0, min(ax1, bx1) - max(ax0, bx0))
+    iy = max(0.0, min(ay1, by1) - max(ay0, by0))
+    return (ix * iy) / max(float(a["w"]) * float(a["h"]), 0.000001)
+
+
+def _slot_crop_bbox_without_card_frame(slot_bbox: dict, cards: list[dict]) -> dict:
+    adjusted = dict(slot_bbox)
+    for card in cards or []:
+        card_bbox = card.get("bbox_percent") if isinstance(card, dict) else None
+        if not isinstance(card_bbox, dict):
+            continue
+        if not _bbox_contains(card_bbox, adjusted, tolerance=0.006) and _bbox_overlap_ratio(adjusted, card_bbox) < 0.82:
+            continue
+        try:
+            stroke_pt = float(card.get("stroke_width_pt") or 1.5)
+        except Exception:
+            stroke_pt = 1.5
+        pad = max(0.004, min(0.018, 0.004 + stroke_pt * 0.0018))
+        cx0, cy0 = float(card_bbox["x"]), float(card_bbox["y"])
+        cx1 = cx0 + float(card_bbox["w"])
+        cy1 = cy0 + float(card_bbox["h"])
+        inner = {
+            "x": min(cx1, cx0 + pad),
+            "y": min(cy1, cy0 + pad),
+            "w": max(0.001, float(card_bbox["w"]) - pad * 2),
+            "h": max(0.001, float(card_bbox["h"]) - pad * 2),
+        }
+        sx0, sy0 = float(adjusted["x"]), float(adjusted["y"])
+        sx1 = sx0 + float(adjusted["w"])
+        sy1 = sy0 + float(adjusted["h"])
+        nx0 = max(sx0, inner["x"])
+        ny0 = max(sy0, inner["y"])
+        nx1 = min(sx1, inner["x"] + inner["w"])
+        ny1 = min(sy1, inner["y"] + inner["h"])
+        if nx1 - nx0 > 0.001 and ny1 - ny0 > 0.001:
+            adjusted = {"x": round(nx0, 4), "y": round(ny0, 4), "w": round(nx1 - nx0, 4), "h": round(ny1 - ny0, 4)}
+    return adjusted
+
+
 def _placeholder_asset(slot: dict, out_path: Path, background: str) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     ratio = float(slot["bbox_percent"]["w"]) / max(float(slot["bbox_percent"]["h"]), 0.001)
@@ -472,8 +526,9 @@ def _make_asset_specs(program: dict, reference_path: Path, out: Path, generation
         slot_ratio = _slot_ratio_for_bbox(bbox, program)
         generation_ratio = _supported_aspect_ratio(slot_ratio, 1.0)
         preserve_reference_crop = asset_policy == "reference_crop" or (not explicit_policy and _preserve_reference_crop_for_slot(slot, slot_type))
+        crop_bbox = _slot_crop_bbox_without_card_frame(bbox, program.get("cards", []))
         crop_path = out / "reference_slot_crops" / f"{slot['id']}.png"
-        _crop_reference(reference_path, crop_path, bbox)
+        _crop_reference(reference_path, crop_path, crop_bbox)
         spec = {
             "slot_id": slot["id"],
             "asset_id": slot["asset_id"],
@@ -486,6 +541,7 @@ def _make_asset_specs(program: dict, reference_path: Path, out: Path, generation
             "downstream_ids": slot.get("downstream_ids", []),
             "prompt_subject": slot.get("prompt_subject") or slot.get("paper_concept") or slot.get("id"),
             "slot_bbox_percent": bbox,
+            "reference_crop_bbox_percent": crop_bbox,
             "slot_aspect_ratio": round(slot_ratio, 4),
             "generation_aspect_ratio": generation_ratio,
             "background_color_hex": background,
@@ -937,6 +993,7 @@ def rebuild_editable(
         )
     design_logic = design_bundle.get("logic", {}) if isinstance(design_bundle, dict) else {}
     design_generation_plan = design_bundle.get("generation_plan", {}) if isinstance(design_bundle, dict) else {}
+    design_flow_graph = design_bundle.get("flow_graph", {}) if isinstance(design_bundle, dict) else {}
 
     controls_source = "localized"
     reference_controls_raw: dict | None = None
@@ -956,6 +1013,7 @@ def rebuild_editable(
             out_path,
             mode=control_mode,
             control_adapter=control_adapter,
+            flow_graph=design_flow_graph,
         )
     program, reference_controls = _apply_rebuild_arrow_routing(program, reference_controls_raw or {}, out_path, arrow_style_mode)
     reference_controls["controls_source"] = controls_source

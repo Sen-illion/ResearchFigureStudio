@@ -11,7 +11,7 @@ from rfs.cli import main
 from rfs.editable_rebuild import economy_acceptance_decision, rebuild_editable, _make_asset_specs
 from rfs.rebuild_eval import evaluate_rebuild_vlm
 from rfs.rebuild_vlm_validation import build_rebuild_vlm_validation_report
-from rfs.rebuild_vlm_adapters import build_rebuild_vlm_adapters, vlm_design_adapter, vlm_layout_adapter, vlm_semantic_adapter, vlm_text_intelligence_adapter
+from rfs.rebuild_vlm_adapters import build_rebuild_vlm_adapters, vlm_control_adapter_factory, vlm_design_adapter, vlm_layout_adapter, vlm_semantic_adapter, vlm_text_intelligence_adapter
 
 
 def _fixture(path: Path) -> Path:
@@ -441,6 +441,42 @@ class RebuildEditableTests(unittest.TestCase):
             self.assertEqual(validation["control"]["routed_arrow_count"], 2)
             self.assertGreaterEqual(validation["control"]["routed_path_changed_count"], 1)
 
+    def test_global_flow_graph_is_passed_to_control_adapter_and_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = _fixture(root / "pipeline.png")
+            out = root / "rebuild"
+            seen = {}
+
+            def fake_design(_path, _model):
+                return {
+                    "layers": [
+                        {"id": "slot_a", "kind": "visual_slot", "bbox_percent": {"x": 0.08, "y": 0.25, "w": 0.16, "h": 0.22}},
+                        {"id": "slot_b", "kind": "visual_slot", "bbox_percent": {"x": 0.62, "y": 0.25, "w": 0.16, "h": 0.22}},
+                    ],
+                    "flow_graph": {"edges": [{"id": "flow_good", "source_id": "slot_a", "target_id": "slot_b"}, {"id": "flow_bad", "source_id": "slot_a", "target_id": "missing"}]},
+                }
+
+            def fake_layout(_path, _base):
+                return {"slots": [
+                    {"id": "slot_a", "asset_id": "slot_a", "bbox_percent": {"x": 0.08, "y": 0.25, "w": 0.16, "h": 0.22}},
+                    {"id": "slot_b", "asset_id": "slot_b", "bbox_percent": {"x": 0.62, "y": 0.25, "w": 0.16, "h": 0.22}},
+                ]}
+
+            def fake_controls(_path, _slots, _heuristic, flow_graph):
+                seen["edge_ids"] = [item["id"] for item in flow_graph["edges"]]
+                return {"arrows": [{"id": "flow_arrow", "source_id": "slot_a", "target_id": "slot_b", "path_percent": [[0.24, 0.36], [0.62, 0.36]]}]}
+
+            rebuild_editable(reference, out, asset_mode="placeholder", text_mode="off", design_adapter=fake_design, vlm_layout_adapter=fake_layout, control_adapter=fake_controls)
+
+            self.assertEqual(seen["edge_ids"], ["flow_good", "flow_bad"])
+            controls = json.loads((out / "reference_controls.json").read_text(encoding="utf-8"))
+            self.assertTrue(controls["flow_graph_used"])
+            self.assertEqual(controls["invalid_flow_edge_count"], 1)
+            validation = json.loads((out / "rebuild_vlm_validation_report.json").read_text(encoding="utf-8"))
+            self.assertTrue(validation["control"]["flow_graph_used"])
+            self.assertEqual(validation["control"]["invalid_flow_edge_ids"], ["flow_bad"])
+
     def test_rebuild_preserves_dashed_multipoint_reference_arrow_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -692,6 +728,19 @@ class RebuildEditableTests(unittest.TestCase):
             self.assertEqual(result["_vlm_model"], "design-model")
             self.assertEqual(call.call_args.kwargs["model"], "design-model")
             self.assertEqual(call.call_args.args[1], [reference])
+
+    def test_real_vlm_control_adapter_prompt_includes_flow_graph(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = _fixture(root / "pipeline.png")
+            adapter = vlm_control_adapter_factory(root)
+            flow_graph = {"edges": [{"id": "flow_prior", "source_id": "slot_a", "target_id": "slot_b"}]}
+            with patch.dict("os.environ", {"RFS_REBUILD_CONTROL_MODEL": "control-model"}, clear=False):
+                with patch("rfs.rebuild_vlm_adapters.call_vlm_json") as call:
+                    call.return_value = {"summary": "ok", "arrows": []}
+                    adapter(reference, [{"id": "slot_a"}, {"id": "slot_b"}], [], flow_graph)
+            self.assertIn("flow_prior", call.call_args.args[0])
+            self.assertEqual(call.call_args.kwargs["model"], "control-model")
 
     def test_real_vlm_semantic_adapter_output_can_drive_pipeline(self):
         with tempfile.TemporaryDirectory() as tmp:

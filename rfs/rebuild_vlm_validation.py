@@ -148,6 +148,10 @@ def build_rebuild_vlm_validation_report(
             "routed_path_changed_count": routed_path_changed_count if raw_arrows else reference_controls.get("routed_path_changed_count", 0),
             "render_style_counts": render_style_counts,
             "arrows_with_render_style_count": sum(1 for arrow in arrows if arrow.get("render_style")),
+            "flow_graph_used": bool(reference_controls.get("flow_graph_used")),
+            "flow_graph_edge_count": reference_controls.get("flow_graph_edge_count", 0),
+            "invalid_flow_edge_count": reference_controls.get("invalid_flow_edge_count", 0),
+            "invalid_flow_edge_ids": reference_controls.get("invalid_flow_edge_ids", []),
             "warnings": reference_controls.get("warnings", []),
         },
         "text_role": {

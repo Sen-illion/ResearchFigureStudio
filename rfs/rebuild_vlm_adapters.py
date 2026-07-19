@@ -105,8 +105,10 @@ Prefer structural regions that should become editable PPT objects:
 
 Rules:
 - Do not create a slot for pure text, arrows, or panel borders.
+- Hollow rectangles, rounded rectangles, dashed group boundaries, metric badges, and legend frames should be cards, not slots.
 - Keep ids short, stable, lowercase snake_case.
 - Each slot must include id, asset_id, bbox_percent, prompt_subject if recognizable, and panel_id if inside a panel.
+- Each card must include semantic_role, shape_kind, stroke_color, stroke_width_pt, dash_style, fill_color, fill_transparency, and corner_radius.
 - Include confidence in 0..1.
 
 Return schema:
@@ -114,7 +116,20 @@ Return schema:
   "summary": "...",
   "confidence": 0.0,
   "panels": [{{"id":"stage_1","title":"...","bbox_percent":{{"x":0,"y":0,"w":0.1,"h":0.1}},"confidence":0.0}}],
-  "cards": [{{"id":"card_1","title":"...","bbox_percent":{{"x":0,"y":0,"w":0.1,"h":0.1}},"panel_id":"stage_1","confidence":0.0}}],
+  "cards": [{{
+    "id":"card_1",
+    "semantic_role":"subcard_frame|outer_group_boundary|metric_badge|legend_frame",
+    "bbox_percent":{{"x":0,"y":0,"w":0.1,"h":0.1}},
+    "panel_id":"stage_1",
+    "shape_kind":"rounded_rect|rect",
+    "stroke_color":"#59AFCB",
+    "stroke_width_pt":1.5,
+    "dash_style":"solid|dash|dotted",
+    "fill_color":"#FFFFFF",
+    "fill_transparency":1.0,
+    "corner_radius":0.08,
+    "confidence":0.0
+  }}],
   "slots": [{{"id":"slot_1","asset_id":"slot_1","bbox_percent":{{"x":0,"y":0,"w":0.1,"h":0.1}},"panel_id":"stage_1","prompt_subject":"...","confidence":0.0}}],
   "legend_regions": [{{"id":"legend_1","bbox_percent":{{"x":0,"y":0,"w":0.1,"h":0.1}},"confidence":0.0}}]
 }}
@@ -127,10 +142,10 @@ Heuristic base layout:
     return result
 
 
-def vlm_control_adapter_factory(out_dir: str | Path) -> Callable[[str | Path, list[dict], list[dict]], dict]:
+def vlm_control_adapter_factory(out_dir: str | Path) -> Callable[[str | Path, list[dict], list[dict], dict | None], dict]:
     out = Path(out_dir)
 
-    def adapter(reference_path: str | Path, slots: list[dict], heuristic_controls: list[dict]) -> dict:
+    def adapter(reference_path: str | Path, slots: list[dict], heuristic_controls: list[dict], flow_graph: dict | None = None) -> dict:
         model = resolve_vlm_model("RFS_REBUILD_CONTROL_MODEL", "RFS_CONTROL_LOCALIZER_MODEL", "RFS_LOCATOR_MODEL")
         image_paths = [reference_path]
         for overlay in [out / "reference_geometry_overlay.png", out / "reference_controls_candidates_overlay.png"]:
@@ -152,6 +167,7 @@ Rules:
 - Use visual_weight chunky for short thick/block arrows, normal for ordinary arrows, and thin for subtle helper connectors.
 - Use preferred_axis/bend_side only as coarse routing hints; code will compute final PPT geometry from source/target boxes.
 - path_percent is a reference-path hint for auditing/routing, not the sole final geometry authority.
+- Use the global flow graph as a semantic prior for source-target binding, but prefer visible arrow pixels when the graph conflicts with the reference image.
 
 Return schema:
 {{
@@ -166,6 +182,9 @@ Slots:
 
 Heuristic control candidates:
 {json.dumps(_brief_controls(heuristic_controls), ensure_ascii=False)}
+
+Global flow graph prior:
+{json.dumps(flow_graph or {}, ensure_ascii=False)}
 """.strip()
         result = call_vlm_json(prompt, image_paths, model=model)
         result["_vlm_model"] = model

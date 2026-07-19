@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import inspect
 from pathlib import Path
 from typing import Callable
 
@@ -308,6 +309,39 @@ def _draw_overlay(reference_path: Path, out_path: Path, arrows: list[dict]) -> N
         image.save(out_path)
 
 
+def _flow_edges(flow_graph: dict | None) -> list[dict]:
+    if not isinstance(flow_graph, dict):
+        return []
+    return [item for item in flow_graph.get("edges", []) or [] if isinstance(item, dict)]
+
+
+def _flow_graph_stats(flow_graph: dict | None, objects: list[dict]) -> dict:
+    object_ids = {str(item.get("id") or "") for item in objects if isinstance(item, dict)}
+    edges = _flow_edges(flow_graph)
+    invalid = []
+    for edge in edges:
+        source = str(edge.get("source_id") or edge.get("source") or "")
+        target = str(edge.get("target_id") or edge.get("target") or "")
+        if source not in object_ids or target not in object_ids:
+            invalid.append(str(edge.get("id") or f"{source}->{target}"))
+    return {
+        "flow_graph_used": bool(edges),
+        "flow_graph_edge_count": len(edges),
+        "invalid_flow_edge_count": len(invalid),
+        "invalid_flow_edge_ids": invalid,
+    }
+
+
+def _call_control_adapter(adapter: Callable, reference: Path, bindable: list[dict], heuristic: list[dict], flow_graph: dict | None):
+    try:
+        signature = inspect.signature(adapter)
+        if len(signature.parameters) >= 4:
+            return adapter(reference, bindable, heuristic, flow_graph)
+    except (TypeError, ValueError):
+        pass
+    return adapter(reference, bindable, heuristic)
+
+
 def localize_reference_controls(
     reference_path: str | Path,
     slots: list[dict],
@@ -315,11 +349,15 @@ def localize_reference_controls(
     out_dir: str | Path,
     mode: str = "hybrid",
     control_adapter: Callable[[str | Path, list[dict], list[dict]], dict | list[dict]] | None = None,
+    flow_graph: dict | None = None,
 ) -> dict:
     reference = Path(reference_path)
     out = Path(out_dir)
     warnings = []
     bindable = _bindable_objects(out, slots)
+    flow_stats = _flow_graph_stats(flow_graph, bindable)
+    if flow_stats["invalid_flow_edge_count"]:
+        warnings.append(f"{flow_stats['invalid_flow_edge_count']}_invalid_flow_graph_edge(s)")
     cv_heuristic = _cv_line_controls(reference, bindable, palette)
     heuristic = cv_heuristic or _sequence_controls(slots, palette)
     _draw_overlay(reference, out / "reference_controls_candidates_overlay.png", heuristic)
@@ -328,7 +366,7 @@ def localize_reference_controls(
     if mode in {"vlm", "hybrid"}:
         if control_adapter:
             try:
-                raw = control_adapter(reference, bindable, heuristic)
+                raw = _call_control_adapter(control_adapter, reference, bindable, heuristic, flow_graph)
                 raw_arrows = raw.get("arrows", []) if isinstance(raw, dict) else raw
                 normalized = _normalize_controls(raw_arrows, bindable, palette)
                 if normalized:
@@ -364,4 +402,5 @@ def localize_reference_controls(
         "merged_arrow_count": len(arrows),
         "warnings": warnings,
         "arrows": arrows,
+        **flow_stats,
     }
