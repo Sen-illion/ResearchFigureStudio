@@ -149,6 +149,11 @@ rfs rebuild-editable `
   --layout-mode hybrid `
   --control-mode hybrid `
   --text-mode ocr `
+  --text-grouping-mode hybrid `
+  --text-role-mode vlm `
+  --text-intelligence-mode vlm `
+  --rebuild-critic-mode vlm `
+  --rebuild-critic-iterations 2 `
   --export-preview
 ```
 
@@ -179,7 +184,22 @@ The rebuild workflow writes `reference_geometry_overlay.png` and
 `reference_controls_overlay.png` for inspection. If the automatic layout or
 arrows need correction, edit `reference_geometry.json` or
 `reference_controls_raw.json`; `reference_controls.json` is the routed
-PPT-ready controls contract. Recompile without another API call:
+PPT-ready controls contract.
+
+Text reconstruction writes raw OCR, grouping, and ownership artifacts:
+`reference_text_geometry_raw.json`, `text_grouping_plan.json`,
+`text_grouping_report.json`, `text_layer_ownership_plan.json`, and
+`text_layer_ownership_report.json`. `--text-grouping-mode off|heuristic|vlm|hybrid`
+controls whether OCR lines are merged locally or arbitrated by a VLM.
+
+The compiled-preview critic is opt-in through
+`--rebuild-critic-mode off|heuristic|vlm` and
+`--rebuild-critic-iterations`. VLM critic patches must be concrete JSON updates
+to text bbox/font/align/visible/z-index/layer ownership, slot/panel bbox, or
+arrow path/style. The critic cannot change text content, write PPT code, or
+request crop masking.
+
+Recompile without another API call:
 
 ```powershell
 rfs rebuild-editable `

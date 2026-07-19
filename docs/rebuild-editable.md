@@ -40,10 +40,18 @@ rfs rebuild-editable --reference input.png --out output\demo --asset-mode api --
 --no-economy-mode        Disable economy reuse decisions.
 --regenerate-slots       Comma-separated slot ids to rerun.
 --text-mode              ocr | manual | off. Default: ocr.
+--text-grouping-mode     off | heuristic | vlm | hybrid. Default: heuristic.
+--text-grouping-model    Optional VLM model for text grouping arbitration.
+--text-role-mode         heuristic | vlm. Default: vlm.
+--text-intelligence-mode off | heuristic | vlm. Default: vlm.
 --layout-mode            heuristic | vlm | hybrid. Default: hybrid.
 --ocr-engine             paddle | easyocr | off. Default: paddle.
 --ocr-lang               en | ch | en_ch. Default: en_ch.
 --control-mode           heuristic | vlm | hybrid | manual. Default: hybrid.
+--rebuild-critic-mode    off | heuristic | vlm. Default: off.
+--rebuild-critic-iterations
+                         Compiled-preview critic iterations, clamped to 0-3.
+--rebuild-critic-model   Optional VLM model for compiled-preview critic.
 --skip-analysis          Reuse existing JSON contracts in --out.
 --compile-only           Recompile PPTX from existing JSON contracts and assets.
 --export-preview         Export rebuild_preview.png when PowerPoint is available.
@@ -67,6 +75,8 @@ MODEL_VLM
 RFS_REBUILD_LAYOUT_MODEL    optional
 RFS_REBUILD_CONTROL_MODEL   optional
 RFS_REBUILD_SEMANTIC_MODEL  optional
+RFS_TEXT_GROUPING_MODEL     optional
+RFS_REBUILD_CRITIC_MODEL    optional
 ```
 
 PowerShell example:
@@ -92,7 +102,12 @@ The workflow writes these files:
 input_manifest.json
 reference_geometry.json
 reference_geometry_overlay.png
+reference_text_geometry_raw.json
 reference_text_geometry.json
+text_grouping_plan.json
+text_grouping_report.json
+text_layer_ownership_plan.json
+text_layer_ownership_report.json
 reference_controls_raw.json
 reference_controls.json
 reference_controls_overlay.png
@@ -105,11 +120,52 @@ asset_ratio_fit_report.json
 figure_program.json
 composition_quality_report.json
 rebuild_vlm_validation_report.json
+rebuild_visual_quality_report.json
+rebuild_visual_critic_iter_N.json when --rebuild-critic-mode is enabled
+rebuild_corrections_iter_N.json when critic patches are applied
 editable_composition.pptx
 rebuild_preview.png or preview_export_error.txt
 ```
 
-`figure_program.json` is the PPT compiler source of truth. `reference_text_geometry.json` stores OCR or fallback text geometry. `reference_controls_raw.json` stores localized connector candidates before routing, while `reference_controls.json` stores the final routed editable connector contract. `slot_inventory.json` stores non-text visual asset slots.
+`figure_program.json` is the PPT compiler source of truth. `reference_text_geometry_raw.json` stores raw line-level OCR, `text_grouping_plan.json` records line-to-paragraph grouping, and `reference_text_geometry.json` stores the final grouped OCR or fallback text geometry. `text_layer_ownership_report.json` records whether each OCR text region belongs in the editable PPT text layer, the raster asset layer, decorative asset text, or should be ignored. `reference_controls_raw.json` stores localized connector candidates before routing, while `reference_controls.json` stores the final routed editable connector contract. `slot_inventory.json` stores non-text visual asset slots.
+
+## Text Grouping And Layer Ownership
+
+OCR often returns one line at a time. By default, rebuild-editable now runs
+heuristic text grouping before role classification so multi-line body text can
+become one paragraph textbox. Use `--text-grouping-mode hybrid` to let a VLM
+arbitrate raw OCR ids against the heuristic groups. The VLM may choose groups,
+ignored OCR ids, role, and alignment, but it cannot invent freeform bboxes; code
+computes each grouped bbox from the union of raw OCR boxes.
+
+Text ownership is explicit. Critical labels such as panel titles, section
+titles, arrows, legends, method labels, modality labels, and slot captions stay
+in the editable PPT text layer. Non-critical OCR text visually inside a raster
+slot can be assigned to `raster_asset_layer` so it is not duplicated as an
+editable textbox. The workflow does not mask or erase crop asset pixels.
+
+## Compiled-Preview Visual Critic
+
+`--rebuild-critic-mode heuristic` writes deterministic visual quality reports
+without mutating the program. It checks text overlap, text bboxes outside the
+canvas, same-group misalignment, slot/panel overlap, missing arrow paths, and
+text ownership conflicts.
+
+`--rebuild-critic-mode vlm --rebuild-critic-iterations N` compares the reference
+image against the exported preview PNG and requests concrete JSON patches. The
+critic is not allowed to write PPT code, change text content, request crop
+masking, or make vague requests such as "optimize the layout." It must return
+specific operations such as:
+
+```json
+{"op":"update_text","text_id":"text_ref_text_ocr_012","font_size_pt":10,"z_index":8}
+```
+
+Allowed patch fields are intentionally narrow: text bbox/font/align/visible/
+z_index/layer ownership, slot/panel bbox, and arrow path/style. Application is
+hard-limited per iteration: text centers move at most 3%, text font size changes
+at most 20%, slot/panel centers move at most 5%, and slot/panel sizes change at
+most 20%. If a slot bbox changes, only that slot is regenerated or recopied.
 
 ## Analysis And Manual Correction
 
