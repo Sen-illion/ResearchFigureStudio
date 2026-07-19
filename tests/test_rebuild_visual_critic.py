@@ -75,6 +75,42 @@ class RebuildVisualCriticTests(unittest.TestCase):
             self.assertEqual(report["ownership_issue_count"], 1)
             self.assertEqual(report["issues"][0]["type"], "text_layer_ownership_conflict")
 
+    def test_same_target_role_without_group_id_is_not_forced_aligned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            program = {
+                "text_program": {
+                    "items": [
+                        {
+                            "id": "text_a",
+                            "target_id": "panel_a",
+                            "role": "body_label",
+                            "bbox_percent": {"x": 0.10, "y": 0.10, "w": 0.10, "h": 0.03},
+                        },
+                        {
+                            "id": "text_b",
+                            "target_id": "panel_a",
+                            "role": "body_label",
+                            "bbox_percent": {"x": 0.30, "y": 0.40, "w": 0.10, "h": 0.03},
+                        },
+                        {
+                            "id": "text_c",
+                            "target_id": "panel_a",
+                            "role": "body_label",
+                            "bbox_percent": {"x": 0.50, "y": 0.70, "w": 0.10, "h": 0.03},
+                        },
+                    ]
+                },
+                "panels": [],
+                "slots": [],
+                "arrows": [],
+            }
+
+            report = run_rebuild_visual_quality_check(out, program)
+
+            self.assertEqual(report["status"], "pass")
+            self.assertNotIn("text_group_misaligned", {item["type"] for item in report["issues"]})
+
     def test_apply_concrete_text_patch_with_limits_and_z_index(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

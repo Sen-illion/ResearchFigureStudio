@@ -53,6 +53,14 @@ def _visible_text_items(program: dict) -> list[dict]:
     return [item for item in text_program.get("items", []) if isinstance(item, dict) and item.get("visible", True)]
 
 
+def _text_alignment_group_key(item: dict) -> tuple[str, str] | None:
+    for key in ("paragraph_id", "text_group_id", "group_id", "source_group_id"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return (key, value)
+    return None
+
+
 def _detect_text_issues(program: dict) -> list[dict]:
     issues = []
     items = _visible_text_items(program)
@@ -78,9 +86,10 @@ def _detect_text_issues(program: dict) -> list[dict]:
                 })
     grouped: dict[tuple[str, str], list[dict]] = {}
     for item in items:
-        key = (str(item.get("target_id") or ""), str(item.get("role") or ""))
-        grouped.setdefault(key, []).append(item)
-    for (target_id, role), group in grouped.items():
+        key = _text_alignment_group_key(item)
+        if key:
+            grouped.setdefault(key, []).append(item)
+    for (group_key, group_id), group in grouped.items():
         if len(group) < 3:
             continue
         centers = [
@@ -91,11 +100,11 @@ def _detect_text_issues(program: dict) -> list[dict]:
         if len(centers) >= 3 and max(centers) - min(centers) > 0.035:
             issues.append({
                 "type": "text_group_misaligned",
-                "target_id": target_id,
-                "role": role,
+                "group_key": group_key,
+                "group_id": group_id,
                 "text_ids": [item.get("id") for item in group],
                 "center_y_span": round(max(centers) - min(centers), 4),
-                "reason": "same target/role text group is visually uneven",
+                "reason": "explicit text group is visually uneven",
             })
     return issues
 
