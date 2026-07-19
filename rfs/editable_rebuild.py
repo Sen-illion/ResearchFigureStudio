@@ -41,6 +41,8 @@ ASSET_THRESHOLDS = {
 }
 
 RAW_CONTROLS_FILENAME = "reference_controls_raw.json"
+REFERENCE_CROP_SLOT_TYPES = {"screenshot_card"}
+REFERENCE_CROP_SEMANTIC_MARKERS = ("screenshot", "video_thumbnail", "video_frame")
 
 
 def _bbox(x: float, y: float, w: float, h: float) -> dict[str, float]:
@@ -92,11 +94,22 @@ def _supported_aspect_ratio(width: float, height: float) -> str:
     return "9:16"
 
 
-def _slot_type_for_box(slot: dict) -> str:
+def _canvas_ratio(program: dict) -> float:
+    canvas = program.get("canvas", {}) if isinstance(program.get("canvas"), dict) else {}
+    width = float(canvas.get("width_px") or canvas.get("width_in") or 1.0)
+    height = float(canvas.get("height_px") or canvas.get("height_in") or 1.0)
+    return width / max(height, 0.001)
+
+
+def _slot_ratio_for_bbox(bbox: dict, program: dict) -> float:
+    return float(bbox["w"]) * _canvas_ratio(program) / max(float(bbox["h"]), 0.001)
+
+
+def _slot_type_for_box(slot: dict, program: dict | None = None) -> str:
     semantic_type = str(slot.get("asset_type") or "").strip()
     if semantic_type:
         return semantic_type
-    ratio = float(slot["bbox_percent"]["w"]) / max(float(slot["bbox_percent"]["h"]), 0.001)
+    ratio = _slot_ratio_for_bbox(slot["bbox_percent"], program or {"canvas": {"width_px": 1, "height_px": 1}})
     if ratio >= 2.2:
         return "thin_tool"
     if ratio >= 1.35:
@@ -104,6 +117,11 @@ def _slot_type_for_box(slot: dict) -> str:
     if ratio <= 0.78:
         return "character"
     return "generic"
+
+
+def _preserve_reference_crop_for_slot(slot: dict, slot_type: str) -> bool:
+    semantic_role = str(slot.get("semantic_role") or "").lower()
+    return slot_type in REFERENCE_CROP_SLOT_TYPES or any(marker in semantic_role for marker in REFERENCE_CROP_SEMANTIC_MARKERS)
 
 
 def _threshold_for_type(slot_type: str) -> tuple[float, float]:
@@ -397,10 +415,11 @@ def _make_asset_specs(program: dict, reference_path: Path, out: Path) -> list[di
     background = str(program["canvas"].get("background") or "#FFFFFF")
     for slot in program["slots"]:
         bbox = slot["bbox_percent"]
-        slot_type = _slot_type_for_box(slot)
+        slot_type = _slot_type_for_box(slot, program)
         fill_min, fill_max = _fill_target_for_type(slot_type)
-        slot_ratio = float(bbox["w"]) / max(float(bbox["h"]), 0.001)
-        generation_ratio = _supported_aspect_ratio(float(bbox["w"]), float(bbox["h"]))
+        slot_ratio = _slot_ratio_for_bbox(bbox, program)
+        generation_ratio = _supported_aspect_ratio(slot_ratio, 1.0)
+        preserve_reference_crop = _preserve_reference_crop_for_slot(slot, slot_type)
         crop_path = out / "reference_slot_crops" / f"{slot['id']}.png"
         _crop_reference(reference_path, crop_path, bbox)
         spec = {
@@ -420,6 +439,9 @@ def _make_asset_specs(program: dict, reference_path: Path, out: Path) -> list[di
             "background_color_hex": background,
             "reference_crop_path": str(crop_path),
             "prompt": _asset_prompt(slot, slot_type, background, generation_ratio),
+            "asset_source_policy": "reference_crop" if preserve_reference_crop else "generated_asset",
+            "asset_source_reason": "evidence screenshot/video thumbnails preserve the reference crop" if preserve_reference_crop else "generative rebuild asset",
+            "preserve_reference_crop": preserve_reference_crop,
             "main_subject_fill_target": round((fill_min + fill_max) / 2, 3),
             "internal_content_fill_target": round((fill_min + fill_max) / 2, 3),
             "max_margin_percent": 0.10,
@@ -455,12 +477,31 @@ def _generate_assets(
         slot_id = spec["slot_id"]
         out_path = asset_dir / f"{spec['asset_id']}.png"
         locked = bool(accepted.get(slot_id, {}).get("accepted")) or bool(accepted.get(spec["asset_id"], {}).get("accepted"))
+        crop_path = Path(spec["reference_crop_path"])
+        if locked and out_path.exists() and economy_mode and slot_id not in regenerate_slots and not strict_asset_regeneration:
+            metrics = _foreground_metrics(out_path, spec["background_color_hex"])
+            decision = economy_acceptance_decision(spec["slot_type"], metrics.get("foreground_bbox_fill_percent", 0.0), strict=False)
+            return {**spec, **metrics, **decision, "status": "reused", "asset_path": str(out_path), "api_requests_attempted": 0, "economy_decision": "reuse_existing_accepted_or_threshold_passed", "fallback_used": False}
+        if asset_mode == "api" and bool(spec.get("preserve_reference_crop")):
+            shutil.copyfile(crop_path, out_path)
+            metrics = _foreground_metrics(out_path, spec["background_color_hex"])
+            decision = economy_acceptance_decision(spec["slot_type"], metrics.get("foreground_bbox_fill_percent", 0.0), strict=False)
+            return {
+                **spec,
+                **metrics,
+                **decision,
+                "status": "reference_crop_preserved",
+                "asset_path": str(out_path),
+                "api_requests_attempted": 0,
+                "attempt": 0,
+                "economy_decision": "preserve_reference_crop_for_evidence_slot",
+                "fallback_used": False,
+            }
         if out_path.exists() and economy_mode and slot_id not in regenerate_slots and not strict_asset_regeneration:
             metrics = _foreground_metrics(out_path, spec["background_color_hex"])
             decision = economy_acceptance_decision(spec["slot_type"], metrics.get("foreground_bbox_fill_percent", 0.0), strict=False)
-            if locked or decision["accepted"]:
+            if decision["accepted"]:
                 return {**spec, **metrics, **decision, "status": "reused", "asset_path": str(out_path), "api_requests_attempted": 0, "economy_decision": "reuse_existing_accepted_or_threshold_passed", "fallback_used": False}
-        crop_path = Path(spec["reference_crop_path"])
         attempts = max(1, int(asset_retries) + 1) if strict_asset_regeneration else 1
         last_error = None
         for attempt in range(1, attempts + 1):

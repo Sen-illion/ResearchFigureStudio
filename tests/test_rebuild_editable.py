@@ -8,7 +8,7 @@ from unittest.mock import patch
 from PIL import Image, ImageDraw
 
 from rfs.cli import main
-from rfs.editable_rebuild import economy_acceptance_decision, rebuild_editable
+from rfs.editable_rebuild import economy_acceptance_decision, rebuild_editable, _make_asset_specs
 from rfs.rebuild_eval import evaluate_rebuild_vlm
 from rfs.rebuild_vlm_validation import build_rebuild_vlm_validation_report
 from rfs.rebuild_vlm_adapters import build_rebuild_vlm_adapters, vlm_layout_adapter, vlm_semantic_adapter, vlm_text_intelligence_adapter
@@ -657,6 +657,50 @@ class RebuildEditableTests(unittest.TestCase):
             spec = json.loads((out / "asset_generation_specs.json").read_text(encoding="utf-8"))["specs"][0]
             self.assertEqual(spec["asset_type"], "character")
             self.assertIn("friendly robot agent", spec["prompt"])
+
+    def test_rebuild_asset_specs_use_canvas_aspect_ratio_and_preserve_screenshots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = _fixture(root / "wide.png")
+            out = root / "rebuild"
+            program = {
+                "canvas": {"width_px": 804, "height_px": 277, "background": "#FFFFFF"},
+                "slots": [{
+                    "id": "slot_video",
+                    "asset_id": "slot_video",
+                    "asset_type": "screenshot_card",
+                    "semantic_role": "video_thumbnail",
+                    "bbox_percent": {"x": 0.037, "y": 0.072, "w": 0.141, "h": 0.235},
+                    "prompt_subject": "video thumbnail",
+                }],
+            }
+
+            spec = _make_asset_specs(program, reference, out)[0]
+
+            self.assertGreater(spec["slot_aspect_ratio"], 1.5)
+            self.assertEqual(spec["generation_aspect_ratio"], "16:9")
+            self.assertEqual(spec["asset_source_policy"], "reference_crop")
+            self.assertTrue(spec["preserve_reference_crop"])
+
+    def test_api_mode_preserves_screenshot_crop_without_image_api_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = _fixture(root / "pipeline.png")
+            out = root / "rebuild"
+
+            def fake_layout(_path, _base):
+                return {"slots": [{"id": "slot_video", "asset_id": "slot_video", "bbox_percent": {"x": 0.05, "y": 0.10, "w": 0.25, "h": 0.22}}]}
+
+            def fake_semantic(_path, _slots, _panels, _controls, _text_geometry):
+                return {"slots": [{"slot_id": "slot_video", "asset_type": "screenshot_card", "semantic_role": "video_thumbnail", "prompt_subject": "video thumbnail"}]}
+
+            with patch("rfs.editable_rebuild._api_generate_asset") as api_call:
+                rebuild_editable(reference, out, asset_mode="api", text_mode="off", vlm_layout_adapter=fake_layout, semantic_adapter=fake_semantic)
+
+            api_call.assert_not_called()
+            report = json.loads((out / "asset_generation_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["api_requests_attempted"], 0)
+            self.assertEqual(report["assets"][0]["status"], "reference_crop_preserved")
 
     def test_real_vlm_text_intelligence_adapter_uses_text_model_env(self):
         with tempfile.TemporaryDirectory() as tmp:
