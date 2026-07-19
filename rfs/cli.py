@@ -9,6 +9,7 @@ from pathlib import Path
 from . import __version__
 from .coevolution import analyze_coevolution_run, run_image_coevolution
 from .editable_rebuild import rebuild_editable
+from .paper_to_image import run_paper_to_image
 from .presentations_qa import run_presentations_qa
 from .rebuild_vlm_adapters import build_rebuild_vlm_adapters
 from .rebuild_eval import evaluate_rebuild_vlm
@@ -49,6 +50,10 @@ def _doctor() -> dict:
         "RFS_REBUILD_TEXT_MODEL": {"present": env_present("RFS_REBUILD_TEXT_MODEL"), "value": os.getenv("RFS_REBUILD_TEXT_MODEL") if env_present("RFS_REBUILD_TEXT_MODEL") else None},
         "RFS_PROMPT_PLANNER_MODEL": {"present": env_present("RFS_PROMPT_PLANNER_MODEL"), "value": os.getenv("RFS_PROMPT_PLANNER_MODEL") if env_present("RFS_PROMPT_PLANNER_MODEL") else None},
         "RFS_TEXT_ROLE_MODEL": {"present": env_present("RFS_TEXT_ROLE_MODEL"), "value": os.getenv("RFS_TEXT_ROLE_MODEL") if env_present("RFS_TEXT_ROLE_MODEL") else None},
+        "RFS_PAPER_TO_IMAGE_MODEL": {"present": env_present("RFS_PAPER_TO_IMAGE_MODEL"), "value": os.getenv("RFS_PAPER_TO_IMAGE_MODEL") if env_present("RFS_PAPER_TO_IMAGE_MODEL") else None},
+        "RFS_PAPER_TO_IMAGE_REVIEW_MODEL": {"present": env_present("RFS_PAPER_TO_IMAGE_REVIEW_MODEL"), "value": os.getenv("RFS_PAPER_TO_IMAGE_REVIEW_MODEL") if env_present("RFS_PAPER_TO_IMAGE_REVIEW_MODEL") else None},
+        "RFS_PAPER_REVIEW_MODEL": {"present": env_present("RFS_PAPER_REVIEW_MODEL"), "value": os.getenv("RFS_PAPER_REVIEW_MODEL") if env_present("RFS_PAPER_REVIEW_MODEL") else None},
+        "RFS_TEMPLATE_ANALYZER_MODEL": {"present": env_present("RFS_TEMPLATE_ANALYZER_MODEL"), "value": os.getenv("RFS_TEMPLATE_ANALYZER_MODEL") if env_present("RFS_TEMPLATE_ANALYZER_MODEL") else None},
         "RFS_ONLINE_JUDGE_MODEL": {"present": env_present("RFS_ONLINE_JUDGE_MODEL"), "value": os.getenv("RFS_ONLINE_JUDGE_MODEL") if env_present("RFS_ONLINE_JUDGE_MODEL") else None},
         "RFS_FROZEN_JUDGE_MODEL": {"present": env_present("RFS_FROZEN_JUDGE_MODEL"), "value": os.getenv("RFS_FROZEN_JUDGE_MODEL") if env_present("RFS_FROZEN_JUDGE_MODEL") else None},
         "RFS_IMAGE_EDIT_URL": {"present": env_present("RFS_IMAGE_EDIT_URL"), "value": os.getenv("RFS_IMAGE_EDIT_URL") if env_present("RFS_IMAGE_EDIT_URL") else None},
@@ -73,6 +78,7 @@ def _doctor() -> dict:
             "Use --asset-mode placeholder for offline engineering validation only.",
             "Use rfs presentations-qa as an optional inspection pass; RFS remains the authoritative PPTX compiler.",
             "Use rfs coevolve-image to run whole-image Creator Agent and Online/Frozen Judge refinement before PPTX conversion.",
+            "Use rfs paper-to-image for evidence-grounded paper summarization, whole-image prompt compilation, candidate generation, and selected_image.png without PPTX.",
         ],
     }
 
@@ -118,6 +124,29 @@ def build_parser() -> argparse.ArgumentParser:
     make.add_argument("--presentations-scale", type=int, default=2, help="Preview render scale for Presentations QA. Default: 2.")
     make.add_argument("--no-export", action="store_true", help="Skip PDF/PNG export and only create PPTX/artifacts.")
     make.add_argument("--json", action="store_true", help="Emit JSON.")
+
+    paper_image = sub.add_parser("paper-to-image", help="Summarize a paper, plan a scientific framework figure, and generate raster image candidates without PPTX.")
+    paper_image.add_argument("--paper", required=True, help="Paper PDF/LaTeX/Markdown/Word/text path.")
+    paper_image.add_argument("--out", required=True, help="Output directory for review, templates, prompts, candidates, and production-only selected_image.png.")
+    paper_image.add_argument("--preferences", help="Optional JSON file containing style and output preferences.")
+    paper_image.add_argument("--positive-reference", action="append", default=[], help="Optional positive visual reference image. Repeat for multiple files.")
+    paper_image.add_argument("--negative-reference", action="append", default=[], help="Optional negative visual reference image. Repeat for multiple files.")
+    paper_image.add_argument("--planner-mode", choices=["vlm", "heuristic"], default="vlm", help="Paper summarization and figure planning mode. Default: vlm with heuristic fallback.")
+    paper_image.add_argument("--planner-model", help="Optional planning VLM. Defaults to RFS_PAPER_TO_IMAGE_MODEL/RFS_PAPER_PLANNER_MODEL/MODEL_VLM.")
+    paper_image.add_argument("--domain-profile", choices=["auto", "general", "ai-ml-method", "system-platform", "dataset-benchmark", "empirical-science", "survey-review"], default="auto", help="Universal review profile plus optional domain extension. Default: auto.")
+    paper_image.add_argument("--template", choices=["auto", "arbor", "linear", "tripanel", "dense-multimodal"], default="auto", help="Reference architecture template. Default: auto selection.")
+    paper_image.add_argument("--asset-mode", choices=["image2", "gemini", "placeholder"], default="image2", help="Whole-image generation backend. Placeholder is for offline validation only.")
+    paper_image.add_argument("--candidates", type=int, default=3, help="Image candidate count, clamped to 1-4. Default: 3.")
+    paper_image.add_argument("--aspect-ratio", default="auto", help="Target image aspect ratio or auto to inherit the selected template. Default: auto.")
+    paper_image.add_argument("--language", default="English", help="Visible label language. Default: English.")
+    paper_image.add_argument("--image-model", help="Optional image model. Defaults to RFS_IMAGE_MODEL/IMAGE_MODEL.")
+    paper_image.add_argument("--image-retries", type=int, default=2, help="Retries per image candidate, clamped to 0-5. Default: 2.")
+    paper_image.add_argument("--review-mode", choices=["off", "heuristic", "vlm"], default="vlm", help="Candidate review mode. Production Image2 requires VLM review. Default: vlm.")
+    paper_image.add_argument("--review-model", help="Optional VLM candidate-review model. Defaults to RFS_PAPER_TO_IMAGE_REVIEW_MODEL/RFS_CRITIC_MODEL/MODEL_VLM.")
+    paper_image.add_argument("--repair-rounds", type=int, default=1, help="Localized Image2 edit repair rounds, clamped to 0-1. Default: 1.")
+    paper_image.add_argument("--ocr-engine", choices=["auto", "paddle", "easyocr", "vlm", "off"], default="auto", help="OCR source for exact-label validation. Auto tries local OCR and uses VLM review evidence. Default: auto.")
+    paper_image.add_argument("--ocr-lang", choices=["en", "ch", "en_ch"], default="en_ch", help="OCR language hint. Default: en_ch.")
+    paper_image.add_argument("--json", action="store_true", help="Emit JSON.")
 
     rebuild = sub.add_parser("rebuild-editable", help="Rebuild a reference image into a reusable editable PowerPoint composition.")
     rebuild.add_argument("--reference", required=True, help="Reference image path.")
@@ -192,7 +221,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _print_human(data: dict) -> None:
     if "ok" in data:
         print(f"ok: {data['ok']}")
-    for key in ["out_dir", "approved_image", "thresholds_met", "stop_reason", "rounds_completed", "online_judge_model", "frozen_judge_model", "weak_judge_isolation", "pptx", "pdf", "png", "preview", "asset_count", "slot_count", "slot_source", "asset_mode", "asset_workers", "asset_retries", "economy_mode", "api_requests_attempted", "text_count", "connector_count", "text_mode", "layout_mode", "control_mode", "compile_only", "candidates_per_slot", "asset_review_mode", "locator_mode", "control_localizer_mode", "arrow_style_mode", "prompt_plan_mode", "prompt_plan_workers", "complexity_profile", "critic_mode", "critic_iterations", "rebuild_critic_mode", "rebuild_critic_iterations", "rebuild_critic_status", "rebuild_critic_model", "text_extractor_mode", "ocr_engine", "ocr_lang", "text_grouping_mode", "text_grouping_effective_mode", "text_grouping_model", "text_role_mode", "text_role_effective_mode", "text_role_model", "text_intelligence_mode", "text_intelligence_effective_mode", "text_intelligence_model", "design_plan_mode", "design_plan_effective_mode", "design_plan_model"]:
+    for key in ["out_dir", "selected_image", "engineering_preview", "candidate_count", "selected_candidate_id", "selected_passed_all_checks", "planner_mode", "planner_model", "paper_review_mode", "domain_profile", "template_id", "review_mode", "approved_image", "thresholds_met", "stop_reason", "rounds_completed", "online_judge_model", "frozen_judge_model", "weak_judge_isolation", "pptx", "pdf", "png", "preview", "asset_count", "slot_count", "slot_source", "asset_mode", "asset_workers", "asset_retries", "economy_mode", "api_requests_attempted", "text_count", "connector_count", "text_mode", "layout_mode", "control_mode", "compile_only", "candidates_per_slot", "asset_review_mode", "locator_mode", "control_localizer_mode", "arrow_style_mode", "prompt_plan_mode", "prompt_plan_workers", "complexity_profile", "critic_mode", "critic_iterations", "rebuild_critic_mode", "rebuild_critic_iterations", "rebuild_critic_status", "rebuild_critic_model", "text_extractor_mode", "ocr_engine", "ocr_lang", "text_grouping_mode", "text_grouping_effective_mode", "text_grouping_model", "text_role_mode", "text_role_effective_mode", "text_role_model", "text_intelligence_mode", "text_intelligence_effective_mode", "text_intelligence_model", "design_plan_mode", "design_plan_effective_mode", "design_plan_model"]:
         if key in data:
             print(f"{key}: {data[key]}")
     if data.get("presentations_qa"):
@@ -261,6 +290,29 @@ def main(argv: list[str] | None = None) -> int:
                 presentations_workspace=args.presentations_workspace,
                 presentations_scale=args.presentations_scale,
                 export=not args.no_export,
+            )
+        elif args.command == "paper-to-image":
+            result = run_paper_to_image(
+                paper=args.paper,
+                out=args.out,
+                preferences_path=args.preferences,
+                positive_references=args.positive_reference,
+                negative_references=args.negative_reference,
+                planner_mode=args.planner_mode,
+                planner_model=args.planner_model,
+                asset_mode=args.asset_mode,
+                candidates=args.candidates,
+                aspect_ratio=args.aspect_ratio,
+                language=args.language,
+                image_model=args.image_model,
+                image_retries=args.image_retries,
+                review_mode=args.review_mode,
+                review_model=args.review_model,
+                domain_profile=args.domain_profile,
+                template=args.template,
+                repair_rounds=args.repair_rounds,
+                ocr_engine=args.ocr_engine,
+                ocr_lang=args.ocr_lang,
             )
         elif args.command == "rebuild-editable":
             rebuild_adapters = build_rebuild_vlm_adapters(args.out)
