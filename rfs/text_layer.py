@@ -8,6 +8,7 @@ from typing import Callable
 from PIL import Image
 
 from .reference_text_extractor import extract_reference_text
+from .text_grouping import group_text_regions, write_text_grouping_artifacts
 from .text_role_classifier import classify_text_roles
 from .utils import write_json, write_text
 
@@ -510,6 +511,7 @@ def build_text_layer(
     text_role_model: str | None = None,
     text_role_adapter: Callable[[str | Path, list[dict], dict, str | None], dict] | None = None,
     text_role_fallback_on_error: bool = False,
+    text_grouping_mode: str = "heuristic",
 ) -> dict:
     """Build reference-first editable text artifacts and attach them to the program."""
 
@@ -526,7 +528,21 @@ def build_text_layer(
         lang=ocr_lang,
         ocr_adapter=ocr_adapter,
     )
-    regions = _merge_ocr_with_fallback(ocr_regions, fallback_regions)
+    raw_geometry = {
+        "summary": "Raw line-level OCR text geometry before paragraph grouping or heuristic fallback.",
+        "reference_path": str(reference_path),
+        "detection_mode": "ocr" if ocr_regions else "ocr_empty_or_unavailable",
+        "ocr_engine": ocr_engine,
+        "ocr_lang": ocr_lang,
+        "text_region_count": len(ocr_regions),
+        "text_regions": ocr_regions,
+    }
+    grouped_ocr_regions, grouping_plan, grouping_report = group_text_regions(
+        ocr_regions,
+        mode=text_grouping_mode if ocr_regions else "off",
+    )
+    write_text_grouping_artifacts(out, raw_geometry, grouping_plan, grouping_report)
+    regions = _merge_ocr_with_fallback(grouped_ocr_regions, fallback_regions)
     if not ocr_regions:
         ocr_report["text_region_count"] = len(regions)
         ocr_report.setdefault("warnings", [])
@@ -603,6 +619,11 @@ def build_text_layer(
         "text_role_mode": text_role_mode,
         "text_role_effective_mode": role_report.get("effective_mode"),
         "text_role_classification_path": "text_role_classification.json",
+        "reference_text_geometry_raw_path": "reference_text_geometry_raw.json",
+        "text_grouping_plan_path": "text_grouping_plan.json",
+        "text_grouping_report_path": "text_grouping_report.json",
+        "text_grouping_mode": text_grouping_mode,
+        "text_grouping_status": grouping_report.get("status"),
         "text_size_normalization_report_path": "text_size_normalization_report.json",
         "text_size_levels": text_size_levels,
         "text_regions": regions,
