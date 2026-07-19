@@ -58,7 +58,7 @@ Every Image2 candidate must pass:
 - aesthetic score of at least `0.75`;
 - valid image resolution and blueprint aspect ratio.
 
-Scientific score must be at least `0.95`; OCR must be exact. If three candidates fail, the best candidate receives one localized Image2 edit repair. If the repair still fails, the command stops without writing `selected_image.png`.
+Scientific score must be at least `0.95`; OCR must be exact. If three candidates fail, the best candidate receives one localized Image2 edit repair. If no candidate passes after repair, Image2 mode still writes the highest-scoring candidate to `selected_image.png` with `selected_delivery_mode: "best_effort"` and records unresolved issues in `candidate_review.json`.
 
 ## Engineering Mode
 

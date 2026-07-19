@@ -9,6 +9,7 @@ from pathlib import Path
 from . import __version__
 from .coevolution import analyze_coevolution_run, run_image_coevolution
 from .editable_rebuild import rebuild_editable
+from .paper_to_editable import run_paper_to_editable
 from .paper_to_image import run_paper_to_image
 from .presentations_qa import run_presentations_qa
 from .rebuild_vlm_adapters import build_rebuild_vlm_adapters
@@ -79,6 +80,7 @@ def _doctor() -> dict:
             "Use rfs presentations-qa as an optional inspection pass; RFS remains the authoritative PPTX compiler.",
             "Use rfs coevolve-image to run whole-image Creator Agent and Online/Frozen Judge refinement before PPTX conversion.",
             "Use rfs paper-to-image for evidence-grounded paper summarization, whole-image prompt compilation, candidate generation, and selected_image.png without PPTX.",
+            "Use rfs paper-to-editable to generate a paper image first, then rebuild it into editable_composition.pptx.",
         ],
     }
 
@@ -147,6 +149,56 @@ def build_parser() -> argparse.ArgumentParser:
     paper_image.add_argument("--ocr-engine", choices=["auto", "paddle", "easyocr", "vlm", "off"], default="auto", help="OCR source for exact-label validation. Auto tries local OCR and uses VLM review evidence. Default: auto.")
     paper_image.add_argument("--ocr-lang", choices=["en", "ch", "en_ch"], default="en_ch", help="OCR language hint. Default: en_ch.")
     paper_image.add_argument("--json", action="store_true", help="Emit JSON.")
+
+    paper_editable = sub.add_parser("paper-to-editable", help="Generate a paper-grounded raster reference image, then rebuild it into editable PowerPoint.")
+    paper_editable.add_argument("--paper", required=True, help="Paper PDF/LaTeX/Markdown/Word/text path.")
+    paper_editable.add_argument("--out", required=True, help="Output directory containing paper_to_image artifacts and editable_composition.pptx.")
+    paper_editable.add_argument("--preferences", help="Optional JSON file containing style and output preferences.")
+    paper_editable.add_argument("--positive-reference", action="append", default=[], help="Optional positive visual reference image for paper-image generation. Repeat for multiple files.")
+    paper_editable.add_argument("--negative-reference", action="append", default=[], help="Optional negative visual reference image for paper-image generation. Repeat for multiple files.")
+    paper_editable.add_argument("--planner-mode", choices=["vlm", "heuristic"], default="vlm", help="Paper-image planning mode. Default: vlm.")
+    paper_editable.add_argument("--planner-model", help="Optional paper-image planning VLM.")
+    paper_editable.add_argument("--domain-profile", choices=["auto", "general", "ai-ml-method", "system-platform", "dataset-benchmark", "empirical-science", "survey-review"], default="auto", help="Paper review profile. Default: auto.")
+    paper_editable.add_argument("--template", choices=["auto", "arbor", "linear", "tripanel", "dense-multimodal"], default="auto", help="Reference architecture template. Default: auto.")
+    paper_editable.add_argument("--paper-image-asset-mode", choices=["image2", "gemini", "placeholder"], default="image2", help="Whole-image generation backend. Default: image2.")
+    paper_editable.add_argument("--paper-image-candidates", type=int, default=3, help="Whole-image candidate count, clamped to 1-4. Default: 3.")
+    paper_editable.add_argument("--aspect-ratio", default="auto", help="Target paper-image aspect ratio. Default: auto.")
+    paper_editable.add_argument("--language", default="English", help="Visible label language. Default: English.")
+    paper_editable.add_argument("--image-model", help="Optional whole-image model. Defaults to RFS_IMAGE_MODEL/IMAGE_MODEL.")
+    paper_editable.add_argument("--image-retries", type=int, default=2, help="Whole-image retries per candidate. Default: 2.")
+    paper_editable.add_argument("--paper-image-review-mode", choices=["off", "heuristic", "vlm"], default="vlm", help="Whole-image review mode. Default: vlm.")
+    paper_editable.add_argument("--paper-image-review-model", help="Optional whole-image review VLM.")
+    paper_editable.add_argument("--paper-image-repair-rounds", type=int, default=1, help="Whole-image repair rounds, clamped to 0-1. Default: 1.")
+    paper_editable.add_argument("--paper-image-ocr-engine", choices=["auto", "paddle", "easyocr", "vlm", "off"], default="auto", help="OCR source for whole-image label validation. Default: auto.")
+    paper_editable.add_argument("--paper-image-ocr-lang", choices=["en", "ch", "en_ch"], default="en_ch", help="OCR language hint for whole-image label validation. Default: en_ch.")
+    paper_editable.add_argument("--require-paper-image-pass", action="store_true", help="Stop before rebuild if the generated paper image did not pass all production gates.")
+    paper_editable.add_argument("--allow-engineering-preview", action="store_true", help="Allow placeholder/gemini engineering_preview.png to enter rebuild for offline checks.")
+    paper_editable.add_argument("--rebuild-asset-mode", choices=["api", "crop", "placeholder"], default="crop", help="Slot asset source for editable rebuild. Default: crop.")
+    paper_editable.add_argument("--rebuild-asset-workers", type=int, default=4, help="Parallel rebuild asset workers. Default: 4.")
+    paper_editable.add_argument("--rebuild-asset-retries", type=int, default=1, help="Retries per rebuild slot. Default: 1.")
+    paper_editable.add_argument("--economy-mode", dest="economy_mode", action="store_true", default=True, help="Reuse accepted/passing rebuild assets. Enabled by default.")
+    paper_editable.add_argument("--no-economy-mode", dest="economy_mode", action="store_false", help="Disable rebuild economy reuse decisions.")
+    paper_editable.add_argument("--text-mode", choices=["ocr", "manual", "off"], default="ocr", help="Editable text extraction mode for rebuild. Default: ocr.")
+    paper_editable.add_argument("--text-grouping-mode", choices=["off", "heuristic", "vlm", "hybrid"], default="heuristic", help="OCR line grouping mode for rebuild. Default: heuristic.")
+    paper_editable.add_argument("--text-grouping-model", help="Optional VLM model for rebuild text grouping.")
+    paper_editable.add_argument("--text-role-mode", choices=["heuristic", "vlm"], default="vlm", help="Text role classification source for rebuild. Default: vlm.")
+    paper_editable.add_argument("--text-role-model", help="Optional VLM model for rebuild text role classification.")
+    paper_editable.add_argument("--text-intelligence-mode", choices=["off", "heuristic", "vlm"], default="vlm", help="Text intelligence source for rebuild. Default: vlm.")
+    paper_editable.add_argument("--text-intelligence-model", help="Optional VLM model for rebuild text intelligence.")
+    paper_editable.add_argument("--design-plan-mode", choices=["off", "heuristic", "vlm"], default="vlm", help="Global reference logic planning mode for rebuild. Default: vlm.")
+    paper_editable.add_argument("--design-plan-model", help="Optional VLM model for rebuild design planning.")
+    paper_editable.add_argument("--layout-mode", choices=["heuristic", "vlm", "hybrid"], default="hybrid", help="Layout extraction mode for rebuild. Default: hybrid.")
+    paper_editable.add_argument("--control-mode", choices=["heuristic", "vlm", "hybrid", "manual"], default="hybrid", help="Arrow/control extraction mode for rebuild. Default: hybrid.")
+    paper_editable.add_argument("--arrow-style-mode", choices=["off", "reference", "aesthetic"], default="reference", help="Arrow styling/routing mode for rebuild. Default: reference.")
+    paper_editable.add_argument("--rebuild-critic-mode", choices=["off", "heuristic", "vlm"], default="off", help="Compiled-preview rebuild critic mode. Default off.")
+    paper_editable.add_argument("--rebuild-critic-iterations", type=int, default=0, help="Compiled-preview critic correction iterations. Default: 0.")
+    paper_editable.add_argument("--rebuild-critic-model", help="Optional VLM model for rebuild critic.")
+    paper_editable.add_argument("--export-preview", action="store_true", help="Export a PNG preview when PowerPoint is available.")
+    paper_editable.add_argument("--regenerate-slots", help="Comma-separated rebuild slot ids to regenerate.")
+    paper_editable.add_argument("--strict-asset-regeneration", action="store_true", help="Use stricter rebuild asset thresholds and retries.")
+    paper_editable.add_argument("--ocr-engine", choices=["paddle", "easyocr", "off"], default="paddle", help="OCR engine for rebuild text extraction. Default: paddle.")
+    paper_editable.add_argument("--ocr-lang", choices=["en", "ch", "en_ch"], default="en_ch", help="OCR language hint for rebuild. Default: en_ch.")
+    paper_editable.add_argument("--json", action="store_true", help="Emit JSON.")
 
     rebuild = sub.add_parser("rebuild-editable", help="Rebuild a reference image into a reusable editable PowerPoint composition.")
     rebuild.add_argument("--reference", required=True, help="Reference image path.")
@@ -221,7 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _print_human(data: dict) -> None:
     if "ok" in data:
         print(f"ok: {data['ok']}")
-    for key in ["out_dir", "selected_image", "engineering_preview", "candidate_count", "selected_candidate_id", "selected_passed_all_checks", "planner_mode", "planner_model", "paper_review_mode", "domain_profile", "template_id", "review_mode", "approved_image", "thresholds_met", "stop_reason", "rounds_completed", "online_judge_model", "frozen_judge_model", "weak_judge_isolation", "pptx", "pdf", "png", "preview", "asset_count", "slot_count", "slot_source", "asset_mode", "asset_workers", "asset_retries", "economy_mode", "api_requests_attempted", "text_count", "connector_count", "text_mode", "layout_mode", "control_mode", "compile_only", "candidates_per_slot", "asset_review_mode", "locator_mode", "control_localizer_mode", "arrow_style_mode", "prompt_plan_mode", "prompt_plan_workers", "complexity_profile", "critic_mode", "critic_iterations", "rebuild_critic_mode", "rebuild_critic_iterations", "rebuild_critic_status", "rebuild_critic_model", "text_extractor_mode", "ocr_engine", "ocr_lang", "text_grouping_mode", "text_grouping_effective_mode", "text_grouping_model", "text_role_mode", "text_role_effective_mode", "text_role_model", "text_intelligence_mode", "text_intelligence_effective_mode", "text_intelligence_model", "design_plan_mode", "design_plan_effective_mode", "design_plan_model"]:
+    for key in ["out_dir", "paper_to_image_out", "generated_reference_image", "generated_reference_source", "paper_image_delivery_mode", "paper_image_selected_candidate_id", "paper_image_selected_passed_all_checks", "paper_image_asset_mode", "paper_image_review_mode", "rebuild_asset_mode", "selected_image", "engineering_preview", "candidate_count", "selected_candidate_id", "selected_passed_all_checks", "planner_mode", "planner_model", "paper_review_mode", "domain_profile", "template_id", "review_mode", "approved_image", "thresholds_met", "stop_reason", "rounds_completed", "online_judge_model", "frozen_judge_model", "weak_judge_isolation", "pptx", "pdf", "png", "preview", "asset_count", "slot_count", "slot_source", "asset_mode", "asset_workers", "asset_retries", "economy_mode", "api_requests_attempted", "text_count", "connector_count", "text_mode", "layout_mode", "control_mode", "compile_only", "candidates_per_slot", "asset_review_mode", "locator_mode", "control_localizer_mode", "arrow_style_mode", "prompt_plan_mode", "prompt_plan_workers", "complexity_profile", "critic_mode", "critic_iterations", "rebuild_critic_mode", "rebuild_critic_iterations", "rebuild_critic_status", "rebuild_critic_model", "text_extractor_mode", "ocr_engine", "ocr_lang", "text_grouping_mode", "text_grouping_effective_mode", "text_grouping_model", "text_role_mode", "text_role_effective_mode", "text_role_model", "text_intelligence_mode", "text_intelligence_effective_mode", "text_intelligence_model", "design_plan_mode", "design_plan_effective_mode", "design_plan_model"]:
         if key in data:
             print(f"{key}: {data[key]}")
     if data.get("presentations_qa"):
@@ -313,6 +365,61 @@ def main(argv: list[str] | None = None) -> int:
                 repair_rounds=args.repair_rounds,
                 ocr_engine=args.ocr_engine,
                 ocr_lang=args.ocr_lang,
+            )
+        elif args.command == "paper-to-editable":
+            rebuild_adapters = build_rebuild_vlm_adapters(args.out)
+            result = run_paper_to_editable(
+                paper=args.paper,
+                out=args.out,
+                preferences_path=args.preferences,
+                positive_references=args.positive_reference,
+                negative_references=args.negative_reference,
+                planner_mode=args.planner_mode,
+                planner_model=args.planner_model,
+                paper_image_asset_mode=args.paper_image_asset_mode,
+                paper_image_candidates=args.paper_image_candidates,
+                aspect_ratio=args.aspect_ratio,
+                language=args.language,
+                image_model=args.image_model,
+                image_retries=args.image_retries,
+                paper_image_review_mode=args.paper_image_review_mode,
+                paper_image_review_model=args.paper_image_review_model,
+                domain_profile=args.domain_profile,
+                template=args.template,
+                paper_image_repair_rounds=args.paper_image_repair_rounds,
+                paper_image_ocr_engine=args.paper_image_ocr_engine,
+                paper_image_ocr_lang=args.paper_image_ocr_lang,
+                require_paper_image_pass=args.require_paper_image_pass,
+                allow_engineering_preview=args.allow_engineering_preview,
+                rebuild_asset_mode=args.rebuild_asset_mode,
+                rebuild_asset_workers=args.rebuild_asset_workers,
+                rebuild_asset_retries=args.rebuild_asset_retries,
+                economy_mode=args.economy_mode,
+                text_mode=args.text_mode,
+                control_mode=args.control_mode,
+                layout_mode=args.layout_mode,
+                export_preview=args.export_preview,
+                regenerate_slots=args.regenerate_slots,
+                strict_asset_regeneration=args.strict_asset_regeneration,
+                ocr_engine=args.ocr_engine,
+                ocr_lang=args.ocr_lang,
+                text_grouping_mode=args.text_grouping_mode,
+                text_grouping_model=args.text_grouping_model,
+                text_role_mode=args.text_role_mode,
+                text_role_model=args.text_role_model,
+                text_intelligence_mode=args.text_intelligence_mode,
+                text_intelligence_model=args.text_intelligence_model,
+                design_plan_mode=args.design_plan_mode,
+                design_plan_model=args.design_plan_model,
+                arrow_style_mode=args.arrow_style_mode,
+                rebuild_critic_mode=args.rebuild_critic_mode,
+                rebuild_critic_iterations=args.rebuild_critic_iterations,
+                rebuild_critic_model=args.rebuild_critic_model,
+                design_adapter=rebuild_adapters["design"] if args.design_plan_mode == "vlm" else None,
+                text_intelligence_adapter=rebuild_adapters["text_intelligence"] if args.text_intelligence_mode == "vlm" else None,
+                vlm_layout_adapter=rebuild_adapters["layout"] if args.layout_mode in {"vlm", "hybrid"} else None,
+                control_adapter=rebuild_adapters["control"] if args.control_mode in {"vlm", "hybrid"} else None,
+                semantic_adapter=rebuild_adapters["semantic"] if args.layout_mode in {"vlm", "hybrid"} or args.control_mode in {"vlm", "hybrid"} else None,
             )
         elif args.command == "rebuild-editable":
             rebuild_adapters = build_rebuild_vlm_adapters(args.out)
