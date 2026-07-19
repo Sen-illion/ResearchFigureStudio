@@ -330,8 +330,9 @@ def _build_program(
     out: Path,
     layout_mode: str = "hybrid",
     vlm_layout_adapter: Callable | None = None,
+    design_plan: dict | None = None,
 ) -> tuple[dict, dict]:
-    layout = plan_reference_layout(reference_path, out, mode=layout_mode, vlm_adapter=vlm_layout_adapter)
+    layout = plan_reference_layout(reference_path, out, mode=layout_mode, vlm_adapter=vlm_layout_adapter, design_plan=design_plan)
     style = _style_from_layout(layout)
     program = {
         "canvas": layout["canvas"],
@@ -1002,7 +1003,7 @@ def rebuild_editable(
         program = _program_from_contracts(out_path, controls_doc=reference_controls_raw)
         reference_geometry = _load_json_or_empty(out_path / "reference_geometry.json")
     else:
-        program, reference_geometry = _build_program(archived_reference, out_path, layout_mode=layout_mode, vlm_layout_adapter=vlm_layout_adapter)
+        program, reference_geometry = _build_program(archived_reference, out_path, layout_mode=layout_mode, vlm_layout_adapter=vlm_layout_adapter, design_plan=design_bundle.get("layer_plan") if isinstance(design_bundle, dict) else None)
     write_json(out_path / "reference_geometry.json", reference_geometry)
 
     if reference_controls_raw is None:

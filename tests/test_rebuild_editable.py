@@ -8,7 +8,7 @@ from unittest.mock import patch
 from PIL import Image, ImageDraw
 
 from rfs.cli import main
-from rfs.editable_rebuild import economy_acceptance_decision, rebuild_editable, _make_asset_specs
+from rfs.editable_rebuild import economy_acceptance_decision, rebuild_editable, _make_asset_specs, _slot_crop_bbox_without_card_frame
 from rfs.rebuild_eval import evaluate_rebuild_vlm
 from rfs.rebuild_vlm_validation import build_rebuild_vlm_validation_report
 from rfs.rebuild_vlm_adapters import build_rebuild_vlm_adapters, vlm_control_adapter_factory, vlm_design_adapter, vlm_layout_adapter, vlm_semantic_adapter, vlm_text_intelligence_adapter
@@ -332,6 +332,31 @@ class RebuildEditableTests(unittest.TestCase):
             self.assertEqual(geometry["vlm_status"], "used")
             self.assertEqual(geometry["confidence"], 0.93)
             self.assertEqual([slot["id"] for slot in program["slots"]], ["input_doc", "ai_critic", "output_card"])
+
+    def test_global_layer_plan_seeds_layout_without_text_or_connector_slots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = _fixture(root / "pipeline.png")
+            out = root / "rebuild"
+
+            def fake_design(_path, _model):
+                return {
+                    "layers": [
+                        {"id": "stage_main", "kind": "panel", "label": "Main", "bbox_percent": {"x": 0.02, "y": 0.08, "w": 0.94, "h": 0.82}},
+                        {"id": "card_group", "kind": "card", "bbox_percent": {"x": 0.08, "y": 0.20, "w": 0.26, "h": 0.34}, "semantic_role": "subcard_frame"},
+                        {"id": "slot_agent", "kind": "visual_slot", "bbox_percent": {"x": 0.40, "y": 0.25, "w": 0.16, "h": 0.24}, "prompt_subject": "agent icon"},
+                        {"id": "title_text", "kind": "text", "bbox_percent": {"x": 0.10, "y": 0.02, "w": 0.30, "h": 0.05}},
+                        {"id": "arrow_flow", "kind": "connector", "bbox_percent": {"x": 0.30, "y": 0.35, "w": 0.20, "h": 0.05}},
+                    ]
+                }
+
+            rebuild_editable(reference, out, asset_mode="placeholder", text_mode="off", layout_mode="heuristic", design_adapter=fake_design)
+            geometry = json.loads((out / "reference_geometry.json").read_text(encoding="utf-8"))
+            self.assertEqual(geometry["design_seed_status"], "used")
+            self.assertEqual([panel["id"] for panel in geometry["panels"]], ["stage_main"])
+            self.assertEqual([card["id"] for card in geometry["cards"]], ["card_group"])
+            self.assertEqual([slot["id"] for slot in geometry["slots"]], ["slot_agent"])
+            self.assertEqual(geometry["design_seed_ignored_layer_count"], 2)
 
     def test_fake_control_localizer_path_is_rendered(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -693,7 +718,7 @@ class RebuildEditableTests(unittest.TestCase):
                     {"id": "slot_a", "bbox_percent": {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2}, "bbox_was_clamped": True},
                     {"id": "slot_a", "bbox_percent": {"x": 1.2, "y": 0.1, "w": 0.2, "h": 0.2}},
                 ],
-                "cards": [],
+                "cards": [{"id": "card_a", "bbox_percent": {"x": 0.2, "y": 0.2, "w": 0.3, "h": 0.2}}],
                 "legend_regions": [],
             }
             controls = {"mode": "hybrid", "vlm_status": "used", "arrows": [{"id": "bad_arrow", "source_id": "missing", "target_id": "slot_a", "path_percent": [[0.1, 0.1]]}]}
@@ -702,6 +727,8 @@ class RebuildEditableTests(unittest.TestCase):
             self.assertEqual(report["status"], "warning")
             self.assertIn("slot_a", report["layout"]["duplicate_slot_ids"])
             self.assertIn("slot_a", report["layout"]["clamped_bbox_ids"])
+            self.assertEqual(report["layout"]["cards_missing_style_count"], 1)
+            self.assertIn("card_a", report["layout"]["cards_missing_style_ids"])
             self.assertIn("bad_arrow", report["control"]["invalid_arrow_ids"])
             self.assertIn("slot_a", report["semantic"]["invalid_asset_type_ids"])
 
@@ -803,6 +830,41 @@ class RebuildEditableTests(unittest.TestCase):
             self.assertTrue(spec["preserve_reference_crop"])
             self.assertEqual(specs["slot_icon"]["asset_source_policy"], "reference_crop")
             self.assertEqual(specs["slot_graph"]["asset_source_policy"], "reference_crop")
+
+    def test_asset_specs_shrink_reference_crop_inside_card_frame(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = _fixture(root / "pipeline.png")
+            out = root / "rebuild"
+            card = {
+                "id": "card_sft",
+                "semantic_role": "subcard_frame",
+                "bbox_percent": {"x": 0.10, "y": 0.20, "w": 0.30, "h": 0.22},
+                "stroke_width_pt": 2.0,
+            }
+            slot_bbox = {"x": 0.10, "y": 0.20, "w": 0.30, "h": 0.22}
+            crop_bbox = _slot_crop_bbox_without_card_frame(slot_bbox, [card])
+            self.assertGreater(crop_bbox["x"], slot_bbox["x"])
+            self.assertGreater(crop_bbox["y"], slot_bbox["y"])
+            self.assertLess(crop_bbox["w"], slot_bbox["w"])
+            self.assertLess(crop_bbox["h"], slot_bbox["h"])
+
+            program = {
+                "canvas": {"width_px": 640, "height_px": 360, "background": "#FFFFFF"},
+                "cards": [card],
+                "slots": [{
+                    "id": "slot_card_visual",
+                    "asset_id": "slot_card_visual",
+                    "asset_type": "generic",
+                    "semantic_role": "subcard_visual",
+                    "bbox_percent": slot_bbox,
+                    "prompt_subject": "card visual",
+                    "asset_source_policy": "reference_crop",
+                }],
+            }
+            spec = _make_asset_specs(program, reference, out)[0]
+            self.assertEqual(spec["slot_bbox_percent"], slot_bbox)
+            self.assertEqual(spec["reference_crop_bbox_percent"], crop_bbox)
 
     def test_generation_policy_skips_non_raster_asset_specs(self):
         with tempfile.TemporaryDirectory() as tmp:
