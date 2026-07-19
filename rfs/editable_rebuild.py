@@ -41,8 +41,18 @@ ASSET_THRESHOLDS = {
 }
 
 RAW_CONTROLS_FILENAME = "reference_controls_raw.json"
-REFERENCE_CROP_SLOT_TYPES = {"screenshot_card"}
-REFERENCE_CROP_SEMANTIC_MARKERS = ("screenshot", "video_thumbnail", "video_frame")
+REFERENCE_CROP_SLOT_TYPES = {"screenshot_card", "tool_icon", "legend_marker"}
+REFERENCE_CROP_SEMANTIC_MARKERS = (
+    "screenshot",
+    "video_thumbnail",
+    "video_frame",
+    "icon",
+    "logo",
+    "knowledge_graph",
+    "retrieval_diagram",
+    "graph_retrieval",
+    "embed_retrieval",
+)
 
 
 def _bbox(x: float, y: float, w: float, h: float) -> dict[str, float]:
@@ -121,7 +131,9 @@ def _slot_type_for_box(slot: dict, program: dict | None = None) -> str:
 
 def _preserve_reference_crop_for_slot(slot: dict, slot_type: str) -> bool:
     semantic_role = str(slot.get("semantic_role") or "").lower()
-    return slot_type in REFERENCE_CROP_SLOT_TYPES or any(marker in semantic_role for marker in REFERENCE_CROP_SEMANTIC_MARKERS)
+    prompt_subject = str(slot.get("prompt_subject") or slot.get("paper_concept") or "").lower()
+    text = f"{semantic_role} {prompt_subject}"
+    return slot_type in REFERENCE_CROP_SLOT_TYPES or any(marker in text for marker in REFERENCE_CROP_SEMANTIC_MARKERS)
 
 
 def _threshold_for_type(slot_type: str) -> tuple[float, float]:

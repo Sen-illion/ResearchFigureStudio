@@ -665,22 +665,43 @@ class RebuildEditableTests(unittest.TestCase):
             out = root / "rebuild"
             program = {
                 "canvas": {"width_px": 804, "height_px": 277, "background": "#FFFFFF"},
-                "slots": [{
-                    "id": "slot_video",
-                    "asset_id": "slot_video",
-                    "asset_type": "screenshot_card",
-                    "semantic_role": "video_thumbnail",
-                    "bbox_percent": {"x": 0.037, "y": 0.072, "w": 0.141, "h": 0.235},
-                    "prompt_subject": "video thumbnail",
-                }],
+                "slots": [
+                    {
+                        "id": "slot_video",
+                        "asset_id": "slot_video",
+                        "asset_type": "screenshot_card",
+                        "semantic_role": "video_thumbnail",
+                        "bbox_percent": {"x": 0.037, "y": 0.072, "w": 0.141, "h": 0.235},
+                        "prompt_subject": "video thumbnail",
+                    },
+                    {
+                        "id": "slot_icon",
+                        "asset_id": "slot_icon",
+                        "asset_type": "tool_icon",
+                        "semantic_role": "llm_icon",
+                        "bbox_percent": {"x": 0.25, "y": 0.56, "w": 0.025, "h": 0.072},
+                        "prompt_subject": "ChatGPT icon",
+                    },
+                    {
+                        "id": "slot_graph",
+                        "asset_id": "slot_graph",
+                        "asset_type": "generic",
+                        "semantic_role": "sub_knowledge_graph",
+                        "bbox_percent": {"x": 0.296, "y": 0.534, "w": 0.159, "h": 0.217},
+                        "prompt_subject": "sub-knowledge graph",
+                    },
+                ],
             }
 
-            spec = _make_asset_specs(program, reference, out)[0]
+            specs = {item["slot_id"]: item for item in _make_asset_specs(program, reference, out)}
+            spec = specs["slot_video"]
 
             self.assertGreater(spec["slot_aspect_ratio"], 1.5)
             self.assertEqual(spec["generation_aspect_ratio"], "16:9")
             self.assertEqual(spec["asset_source_policy"], "reference_crop")
             self.assertTrue(spec["preserve_reference_crop"])
+            self.assertEqual(specs["slot_icon"]["asset_source_policy"], "reference_crop")
+            self.assertEqual(specs["slot_graph"]["asset_source_policy"], "reference_crop")
 
     def test_api_mode_preserves_screenshot_crop_without_image_api_call(self):
         with tempfile.TemporaryDirectory() as tmp:
