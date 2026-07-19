@@ -18,6 +18,7 @@ from .control_localizer import localize_reference_controls
 from .layout_planner import dominant_palette, estimate_background, plan_reference_layout
 from .layout_semantic_planner import plan_slot_semantics
 from .ppt_compiler import compile_ppt
+from .rebuild_design_planner import plan_rebuild_design
 from .rebuild_preview_renderer import render_rebuild_preview
 from .rebuild_text_intelligence import plan_rebuild_text_intelligence
 from .rebuild_vlm_validation import build_rebuild_vlm_validation_report
@@ -829,6 +830,8 @@ def rebuild_editable(
     text_role_model: str | None = None,
     text_intelligence_mode: str = "vlm",
     text_intelligence_model: str | None = None,
+    design_plan_mode: str = "vlm",
+    design_plan_model: str | None = None,
     arrow_style_mode: str = "reference",
     rebuild_critic_mode: str = "off",
     rebuild_critic_iterations: int = 0,
@@ -837,6 +840,7 @@ def rebuild_editable(
     text_grouping_adapter: Callable | None = None,
     text_role_adapter: Callable | None = None,
     text_intelligence_adapter: Callable | None = None,
+    design_adapter: Callable | None = None,
     vlm_layout_adapter: Callable | None = None,
     control_adapter: Callable | None = None,
     semantic_adapter: Callable | None = None,
@@ -862,6 +866,8 @@ def rebuild_editable(
         "text_role_model": text_role_model,
         "text_intelligence_mode": text_intelligence_mode,
         "text_intelligence_model": text_intelligence_model,
+        "design_plan_mode": design_plan_mode,
+        "design_plan_model": design_plan_model,
         "rebuild_critic_mode": rebuild_critic_mode,
         "rebuild_critic_iterations": rebuild_critic_iterations,
         "rebuild_critic_model": rebuild_critic_model,
@@ -871,6 +877,25 @@ def rebuild_editable(
         "skip_analysis": skip_analysis,
         "compile_only": compile_only,
     })
+
+    design_bundle: dict = {}
+    if skip_analysis and (out_path / "reference_logic_plan.json").exists():
+        design_bundle = {
+            "logic": _load_json_or_empty(out_path / "reference_logic_plan.json"),
+            "layer_plan": _load_json_or_empty(out_path / "reference_layer_plan.json"),
+            "generation_plan": _load_json_or_empty(out_path / "reference_generation_plan.json"),
+            "flow_graph": _load_json_or_empty(out_path / "reference_flow_graph.json"),
+        }
+    else:
+        design_bundle = plan_rebuild_design(
+            archived_reference,
+            out_path,
+            mode=design_plan_mode,
+            model=design_plan_model,
+            adapter=design_adapter,
+            fallback_on_error=True,
+        )
+    design_logic = design_bundle.get("logic", {}) if isinstance(design_bundle, dict) else {}
 
     controls_source = "localized"
     reference_controls_raw: dict | None = None
@@ -1058,6 +1083,9 @@ def rebuild_editable(
         "text_intelligence_mode": text_intelligence_mode,
         "text_intelligence_effective_mode": text_intelligence_report.get("effective_mode"),
         "text_intelligence_model": text_intelligence_model,
+        "design_plan_mode": design_plan_mode,
+        "design_plan_effective_mode": design_logic.get("effective_mode"),
+        "design_plan_model": design_logic.get("model") or design_plan_model,
         "rebuild_critic_mode": rebuild_critic_mode,
         "rebuild_critic_iterations": critic_iterations,
         "rebuild_critic_model": rebuild_critic_model,
@@ -1070,6 +1098,11 @@ def rebuild_editable(
         "rebuild_visual_quality_status": visual_quality_report.get("status"),
         "reports": {
             "input_manifest": str(out_path / "input_manifest.json"),
+            "reference_logic_plan": str(out_path / "reference_logic_plan.json"),
+            "reference_logic_plan_md": str(out_path / "reference_logic_plan.md"),
+            "reference_layer_plan": str(out_path / "reference_layer_plan.json"),
+            "reference_generation_plan": str(out_path / "reference_generation_plan.json"),
+            "reference_flow_graph": str(out_path / "reference_flow_graph.json"),
             "reference_geometry": str(out_path / "reference_geometry.json"),
             "reference_text_geometry": str(out_path / "reference_text_geometry.json"),
             "reference_text_geometry_raw": str(out_path / "reference_text_geometry_raw.json"),

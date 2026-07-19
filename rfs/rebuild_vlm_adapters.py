@@ -41,6 +41,54 @@ def _brief_controls(controls: list[dict]) -> list[dict]:
     } for item in controls]
 
 
+def vlm_design_adapter(reference_path: str | Path, explicit_model: str | None = None) -> dict:
+    model = resolve_vlm_model("RFS_REBUILD_DESIGN_MODEL", "RFS_REBUILD_LAYOUT_MODEL", explicit_model=explicit_model)
+    prompt = """
+You are the global planning stage for an editable PowerPoint rebuild of a reference diagram.
+Inspect the whole reference image before any local detection.
+Only output JSON. Do not include markdown or explanations.
+
+Goal:
+- Explain the diagram narrative and reading order.
+- Classify visible layers as background, panel, card, visual_slot, text, connector, legend, or ignore.
+- Propose asset source policies for visual slots.
+- Propose a flow graph that later arrow binding can use as a semantic prior.
+
+Rules:
+- Do not write PowerPoint code.
+- Do not bake labels or arrows into raster assets.
+- Use normalized bbox_percent coordinates in [0,1].
+- Text should use editable_text policy.
+- Arrows/connectors/dashed loops should use ppt_connector policy.
+- Panels/cards/background boxes should use ppt_shape policy.
+- Screenshots, UI frames, logos, video frames, and evidence crops should use reference_crop.
+- Illustrations, characters, tools, and abstract scientific mini-scenes should use api_generate.
+
+Allowed layer kinds: background, panel, card, visual_slot, text, connector, legend, ignore
+Allowed asset policies: reference_crop, api_generate, placeholder, ppt_shape, editable_text, ppt_connector, ignore
+
+Return schema:
+{
+  "summary": "...",
+  "narrative": {"figure_type":"workflow","main_story":"...","key_message":"..."},
+  "reading_order": ["stable_object_id"],
+  "layers": [
+    {"id":"slot_input","kind":"visual_slot","label":"Input document","bbox_percent":{"x":0,"y":0,"w":0.1,"h":0.1},"asset_source_policy":"api_generate","asset_source_reason":"short reason","prompt_subject":"input document stack","asset_type":"document_stack","semantic_role":"input","confidence":0.0}
+  ],
+  "asset_policies": [
+    {"slot_id":"slot_input","policy":"api_generate","reason":"short reason","confidence":0.0}
+  ],
+  "flow_graph": {
+    "nodes": [{"id":"slot_input","label":"Input","kind":"visual_slot","confidence":0.0}],
+    "edges": [{"id":"flow_1","source_id":"slot_input","target_id":"slot_model","relation":"feeds_into","expected_connector":"solid_arrow","confidence":0.0}]
+  }
+}
+""".strip()
+    result = call_vlm_json(prompt, [reference_path], model=model)
+    result["_vlm_model"] = model
+    return result
+
+
 def vlm_layout_adapter(reference_path: str | Path, base_layout: dict) -> dict:
     model = resolve_vlm_model("RFS_REBUILD_LAYOUT_MODEL", "RFS_LOCATOR_MODEL")
     prompt = f"""
@@ -227,8 +275,9 @@ Text program:
 
 def build_rebuild_vlm_adapters(out_dir: str | Path) -> dict[str, Callable | None]:
     if not vlm_credentials_available():
-        return {"layout": None, "control": None, "semantic": None, "text_intelligence": None}
+        return {"design": None, "layout": None, "control": None, "semantic": None, "text_intelligence": None}
     return {
+        "design": vlm_design_adapter,
         "layout": vlm_layout_adapter,
         "control": vlm_control_adapter_factory(out_dir),
         "semantic": vlm_semantic_adapter,

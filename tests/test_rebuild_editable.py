@@ -11,7 +11,7 @@ from rfs.cli import main
 from rfs.editable_rebuild import economy_acceptance_decision, rebuild_editable, _make_asset_specs
 from rfs.rebuild_eval import evaluate_rebuild_vlm
 from rfs.rebuild_vlm_validation import build_rebuild_vlm_validation_report
-from rfs.rebuild_vlm_adapters import build_rebuild_vlm_adapters, vlm_layout_adapter, vlm_semantic_adapter, vlm_text_intelligence_adapter
+from rfs.rebuild_vlm_adapters import build_rebuild_vlm_adapters, vlm_design_adapter, vlm_layout_adapter, vlm_semantic_adapter, vlm_text_intelligence_adapter
 
 
 def _fixture(path: Path) -> Path:
@@ -54,6 +54,11 @@ class RebuildEditableTests(unittest.TestCase):
             self.assertEqual(code, 0)
             required = [
                 "input_manifest.json",
+                "reference_logic_plan.json",
+                "reference_logic_plan.md",
+                "reference_layer_plan.json",
+                "reference_generation_plan.json",
+                "reference_flow_graph.json",
                 "reference_geometry.json",
                 "reference_geometry_overlay.png",
                 "rebuild_vlm_validation_report.json",
@@ -85,6 +90,41 @@ class RebuildEditableTests(unittest.TestCase):
             self.assertIn("<p:cxnSp>", slide_xml)
             text_intel = json.loads((out / "text_intelligence_report.json").read_text(encoding="utf-8"))
             self.assertEqual(text_intel["status"], "skipped")
+            logic = json.loads((out / "reference_logic_plan.json").read_text(encoding="utf-8"))
+            self.assertEqual(logic["mode"], "vlm")
+            self.assertEqual(logic["effective_mode"], "heuristic")
+
+    def test_fake_global_design_adapter_writes_design_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = _fixture(root / "pipeline.png")
+            out = root / "rebuild"
+
+            def fake_design(_path, _model):
+                return {
+                    "summary": "global plan",
+                    "narrative": {"figure_type": "workflow", "main_story": "Input to output", "key_message": "Demo flow"},
+                    "reading_order": ["slot_input", "slot_agent", "slot_output"],
+                    "layers": [
+                        {"id": "slot_input", "kind": "visual_slot", "bbox_percent": {"x": 0.08, "y": 0.20, "w": 0.16, "h": 0.24}, "asset_source_policy": "api_generate", "prompt_subject": "input document"},
+                        {"id": "text_title", "kind": "text", "bbox_percent": {"x": 0.08, "y": 0.02, "w": 0.40, "h": 0.08}, "asset_source_policy": "editable_text"},
+                    ],
+                    "asset_policies": [{"slot_id": "slot_input", "policy": "api_generate", "reason": "illustration"}],
+                    "flow_graph": {"edges": [{"id": "flow_1", "source_id": "slot_input", "target_id": "slot_output", "relation": "feeds_into"}]},
+                }
+
+            result = rebuild_editable(reference, out, asset_mode="placeholder", text_mode="off", design_adapter=fake_design, design_plan_model="fake-design-model")
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["design_plan_effective_mode"], "vlm")
+            self.assertEqual(result["design_plan_model"], "fake-design-model")
+            logic = json.loads((out / "reference_logic_plan.json").read_text(encoding="utf-8"))
+            layers = json.loads((out / "reference_layer_plan.json").read_text(encoding="utf-8"))
+            generation = json.loads((out / "reference_generation_plan.json").read_text(encoding="utf-8"))
+            flow = json.loads((out / "reference_flow_graph.json").read_text(encoding="utf-8"))
+            self.assertEqual(logic["narrative"]["key_message"], "Demo flow")
+            self.assertEqual(layers["layers"][0]["id"], "slot_input")
+            self.assertEqual(generation["asset_policies"][0]["policy"], "api_generate")
+            self.assertEqual(flow["edges"][0]["source_id"], "slot_input")
 
     def test_fake_vlm_text_intelligence_writes_style_relationship_and_layout_reports_without_mutating_text_program(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -641,6 +681,18 @@ class RebuildEditableTests(unittest.TestCase):
             self.assertEqual(call.call_args.kwargs["model"], "layout-model")
             self.assertEqual(call.call_args.args[1], [reference])
 
+    def test_real_vlm_design_adapter_uses_shared_client_and_model_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = _fixture(root / "pipeline.png")
+            with patch.dict("os.environ", {"RFS_REBUILD_DESIGN_MODEL": "design-model"}, clear=False):
+                with patch("rfs.rebuild_vlm_adapters.call_vlm_json") as call:
+                    call.return_value = {"summary": "ok", "layers": [], "asset_policies": [], "flow_graph": {}}
+                    result = vlm_design_adapter(reference)
+            self.assertEqual(result["_vlm_model"], "design-model")
+            self.assertEqual(call.call_args.kwargs["model"], "design-model")
+            self.assertEqual(call.call_args.args[1], [reference])
+
     def test_real_vlm_semantic_adapter_output_can_drive_pipeline(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -794,6 +846,7 @@ class RebuildEditableTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict("os.environ", {"API_BASE": "", "API_KEY": "", "GEMINI_API_KEY": ""}, clear=False):
                 adapters = build_rebuild_vlm_adapters(tmp)
+            self.assertIsNone(adapters["design"])
             self.assertIsNone(adapters["layout"])
             self.assertIsNone(adapters["text_intelligence"])
             with patch.dict("os.environ", {"API_BASE": "https://example.test/v1", "API_KEY": "key"}, clear=False):
