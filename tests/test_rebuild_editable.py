@@ -786,6 +786,42 @@ class RebuildEditableTests(unittest.TestCase):
             self.assertEqual(spec["asset_type"], "character")
             self.assertIn("friendly robot agent", spec["prompt"])
 
+    def test_global_plan_enriches_slot_semantics_without_semantic_adapter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = _fixture(root / "pipeline.png")
+            out = root / "rebuild"
+
+            def fake_design(_path, _model):
+                return {
+                    "layers": [{
+                        "id": "slot_robot",
+                        "kind": "visual_slot",
+                        "bbox_percent": {"x": 0.35, "y": 0.20, "w": 0.18, "h": 0.30},
+                        "asset_type": "character",
+                        "semantic_role": "robot_agent",
+                        "prompt_subject": "friendly robot agent",
+                        "asset_source_policy": "reference_crop",
+                        "asset_source_reason": "preserve robot evidence crop",
+                    }],
+                    "asset_policies": [{"slot_id": "slot_robot", "policy": "reference_crop", "reason": "global crop policy"}],
+                    "flow_graph": {},
+                }
+
+            rebuild_editable(reference, out, asset_mode="placeholder", text_mode="off", layout_mode="heuristic", design_adapter=fake_design)
+            inventory = json.loads((out / "slot_inventory.json").read_text(encoding="utf-8"))
+            slot = inventory["slots"][0]
+            self.assertEqual(slot["asset_type"], "character")
+            self.assertEqual(slot["semantic_role"], "robot_agent")
+            self.assertEqual(slot["prompt_subject"], "friendly robot agent")
+            self.assertEqual(slot["asset_source_policy"], "reference_crop")
+            self.assertEqual(slot["global_plan_object_id"], "slot_robot")
+            semantic = json.loads((out / "slot_semantic_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(semantic["global_plan_usage_count"], 1)
+            spec = json.loads((out / "asset_generation_specs.json").read_text(encoding="utf-8"))["specs"][0]
+            self.assertEqual(spec["asset_source_policy"], "reference_crop")
+            self.assertIn("friendly robot agent", spec["prompt"])
+
     def test_rebuild_asset_specs_use_canvas_aspect_ratio_and_preserve_screenshots(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

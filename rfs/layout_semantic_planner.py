@@ -140,6 +140,39 @@ def _apply_adapter(slots: list[dict], adapter_result: dict | list[dict]) -> dict
     return by_id
 
 
+def _design_layers(design_plan: dict | None) -> list[dict]:
+    if not isinstance(design_plan, dict):
+        return []
+    if isinstance(design_plan.get("layers"), list):
+        return [item for item in design_plan["layers"] if isinstance(item, dict)]
+    layer_plan = design_plan.get("layer_plan") if isinstance(design_plan.get("layer_plan"), dict) else {}
+    return [item for item in layer_plan.get("layers", []) or [] if isinstance(item, dict)]
+
+
+def _design_slots_by_id(design_plan: dict | None) -> dict[str, dict]:
+    by_id = {}
+    for layer in _design_layers(design_plan):
+        if str(layer.get("kind") or "") != "visual_slot":
+            continue
+        slot_id = str(layer.get("id") or layer.get("slot_id") or "")
+        if slot_id:
+            by_id[slot_id] = layer
+    return by_id
+
+
+def _generation_policy_by_slot(generation_plan: dict | None) -> dict[str, dict]:
+    if not isinstance(generation_plan, dict):
+        return {}
+    policies = {}
+    for item in generation_plan.get("asset_policies", []) or []:
+        if not isinstance(item, dict):
+            continue
+        slot_id = str(item.get("slot_id") or item.get("object_id") or item.get("id") or "")
+        if slot_id:
+            policies[slot_id] = item
+    return policies
+
+
 def plan_slot_semantics(
     reference_path: str | Path,
     slots: list[dict],
@@ -148,6 +181,8 @@ def plan_slot_semantics(
     text_geometry: dict | None,
     semantic_adapter: Callable[[str | Path, list[dict], list[dict], list[dict], dict | None], dict | list[dict]] | None = None,
     text_intelligence: dict | None = None,
+    design_plan: dict | None = None,
+    generation_plan: dict | None = None,
 ) -> tuple[list[dict], dict]:
     regions = _text_regions(text_geometry)
     relation_text_by_target = _relation_text_by_target(text_intelligence, regions)
@@ -156,6 +191,11 @@ def plan_slot_semantics(
     semantic_vlm_status = "not_requested"
     semantic_vlm_model = None
     invalid_asset_type_count = 0
+    design_by_id = _design_slots_by_id(design_plan)
+    policy_by_id = _generation_policy_by_slot(generation_plan)
+    global_plan_usage_count = 0
+    global_policy_usage_count = 0
+    conflict_count = 0
     if semantic_adapter:
         try:
             adapter_text_geometry = dict(text_geometry or {})
@@ -186,6 +226,37 @@ def plan_slot_semantics(
         asset_type = _asset_type_from_text(slot, nearby)
         prompt_subject = nearby or str(slot.get("paper_concept") or slot_id)
         semantic_role = asset_type
+        global_slot = design_by_id.get(slot_id, {})
+        policy_record = policy_by_id.get(slot_id, {})
+        asset_source_policy = slot.get("asset_source_policy")
+        policy_source = slot.get("policy_source")
+        asset_source_reason = slot.get("asset_source_reason")
+        if global_slot:
+            global_plan_usage_count += 1
+            global_asset_type = str(global_slot.get("asset_type") or "")
+            if global_asset_type:
+                if global_asset_type in ASSET_TYPES:
+                    asset_type = global_asset_type
+                else:
+                    warnings.append(f"unknown_global_asset_type:{slot_id}:{global_asset_type}")
+                    invalid_asset_type_count += 1
+            semantic_role = str(global_slot.get("semantic_role") or semantic_role)
+            global_subject = str(global_slot.get("prompt_subject") or global_slot.get("label") or "").strip()
+            if global_subject:
+                if relation_texts and all(text.lower() not in global_subject.lower() for text in relation_texts):
+                    conflict_count += 1
+                    warnings.append(f"global_prompt_text_relation_conflict:{slot_id}")
+                prompt_subject = global_subject
+            asset_source_policy = str(global_slot.get("asset_source_policy") or asset_source_policy or "")
+            policy_source = str(global_slot.get("policy_source") or "global_layer_plan")
+            asset_source_reason = str(global_slot.get("asset_source_reason") or asset_source_reason or "global layer plan policy")
+        if policy_record:
+            policy = str(policy_record.get("policy") or policy_record.get("asset_source_policy") or "")
+            if policy:
+                asset_source_policy = policy
+                policy_source = str(policy_record.get("source") or "generation_plan")
+                asset_source_reason = str(policy_record.get("reason") or policy_record.get("asset_source_reason") or "global generation policy")
+                global_policy_usage_count += 1
         override = adapter_by_id.get(slot_id, {})
         if override:
             asset_type = str(override.get("asset_type") or asset_type)
@@ -207,7 +278,12 @@ def plan_slot_semantics(
             "downstream_ids": downstream,
             "prompt_subject": prompt_subject,
             "text_relation_source": "text_intelligence" if relation_texts else "nearest_text",
+            "global_plan_object_id": slot_id if global_slot else None,
+            "asset_source_policy": asset_source_policy,
+            "policy_source": policy_source,
+            "asset_source_reason": asset_source_reason,
         })
+        enriched = {key: value for key, value in enriched.items() if value is not None}
         planned.append(enriched)
     return planned, {
         "summary": "Slot semantic planning report.",
@@ -218,6 +294,9 @@ def plan_slot_semantics(
         "text_region_count": len(regions),
         "text_intelligence_relation_count": len(text_intelligence.get("text_relations", []) or []) if isinstance(text_intelligence, dict) else 0,
         "relationship_text_usage_percent": round(relation_text_usage_count / max(len(planned), 1) * 100, 2),
+        "global_plan_usage_count": global_plan_usage_count,
+        "global_policy_usage_count": global_policy_usage_count,
+        "global_plan_conflict_count": conflict_count,
         "invalid_asset_type_count": invalid_asset_type_count,
         "warnings": warnings,
         "slots": [{
@@ -230,5 +309,8 @@ def plan_slot_semantics(
             "downstream_ids": item.get("downstream_ids"),
             "prompt_subject": item.get("prompt_subject"),
             "text_relation_source": item.get("text_relation_source"),
+            "global_plan_object_id": item.get("global_plan_object_id"),
+            "asset_source_policy": item.get("asset_source_policy"),
+            "policy_source": item.get("policy_source"),
         } for item in planned],
     }

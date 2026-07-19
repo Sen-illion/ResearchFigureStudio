@@ -1072,6 +1072,8 @@ def rebuild_editable(
             text_geometry,
             semantic_adapter=semantic_adapter,
             text_intelligence=text_intelligence_report,
+            design_plan=design_bundle,
+            generation_plan=design_generation_plan,
         )
         program["slots"] = semantic_slots
         reference_geometry["slots"] = semantic_slots
