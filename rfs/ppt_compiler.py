@@ -236,6 +236,8 @@ def _text_item_for_target(program: dict, target_id: str, role: str) -> dict | No
 
 
 def _align_from_text_item(item: dict):
+    if bool(item.get("center_text_in_textbox", True)):
+        return PP_ALIGN.CENTER
     value = str(item.get("align") or "").lower()
     if value == "left":
         return PP_ALIGN.LEFT
@@ -666,6 +668,9 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
             "font_family_guess": item.get("font_family_guess"),
             "fit_strategy": item.get("fit_strategy"),
             "ocr_confidence": item.get("ocr_confidence"),
+            "source_align": item.get("align"),
+            "rendered_align": "center" if bool(item.get("center_text_in_textbox", True)) else str(item.get("align") or "center").lower(),
+            "text_anchor_policy": "center_text_in_textbox" if bool(item.get("center_text_in_textbox", True)) else "source_align",
             "editable_in": "pptx",
             "rendered_as": "ppt_textbox",
         })

@@ -58,7 +58,7 @@ def _draw_text(draw: ImageDraw.ImageDraw, item: dict, canvas_w: int, canvas_h: i
     size_px = max(4, int(round(font_size_pt * canvas_h / 387.0)))
     font = _font(size_px, bold=bool(item.get("bold")))
     color = _hex_color(item.get("color_hex"), "#263747")
-    align = str(item.get("align") or "center").lower()
+    align = "center" if bool(item.get("center_text_in_textbox", True)) else str(item.get("align") or "center").lower()
     text_bbox = draw.textbbox((0, 0), text, font=font)
     text_w = max(1, text_bbox[2] - text_bbox[0])
     text_h = max(1, text_bbox[3] - text_bbox[1])

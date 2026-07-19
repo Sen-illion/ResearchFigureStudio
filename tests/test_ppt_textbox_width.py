@@ -34,6 +34,7 @@ class PptTextboxWidthTests(unittest.TestCase):
                         "font_family_guess": "Arial",
                         "fit_strategy": "ocr_bbox_exact",
                         "editable_in": "pptx",
+                        "align": "left",
                     }],
                 },
             }
@@ -45,10 +46,14 @@ class PptTextboxWidthTests(unittest.TestCase):
             self.assertEqual(report["text"][0]["rendered_bbox_percent"]["w"], 0.32)
             self.assertEqual(report["text"][0]["rendered_bbox_percent"]["x"], 0.24)
             self.assertEqual(report["text"][0]["textbox_width_scale"], 1.6)
+            self.assertEqual(report["text"][0]["source_align"], "left")
+            self.assertEqual(report["text"][0]["rendered_align"], "center")
+            self.assertEqual(report["text"][0]["text_anchor_policy"], "center_text_in_textbox")
 
             with zipfile.ZipFile(pptx) as archive:
                 slide_xml = archive.read("ppt/slides/slide1.xml").decode("utf-8")
             self.assertIn("Scaled text", slide_xml)
+            self.assertIn('algn="ctr"', slide_xml)
 
 
 if __name__ == "__main__":
