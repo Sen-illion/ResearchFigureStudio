@@ -755,6 +755,54 @@ class RebuildEditableTests(unittest.TestCase):
             self.assertEqual(specs["slot_icon"]["asset_source_policy"], "reference_crop")
             self.assertEqual(specs["slot_graph"]["asset_source_policy"], "reference_crop")
 
+    def test_generation_policy_skips_non_raster_asset_specs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = _fixture(root / "pipeline.png")
+            out = root / "rebuild"
+            program = {
+                "canvas": {"width_px": 640, "height_px": 360, "background": "#FFFFFF"},
+                "slots": [
+                    {"id": "slot_visual", "asset_id": "slot_visual", "bbox_percent": {"x": 0.10, "y": 0.20, "w": 0.20, "h": 0.20}},
+                    {"id": "slot_text", "asset_id": "slot_text", "bbox_percent": {"x": 0.40, "y": 0.20, "w": 0.20, "h": 0.10}},
+                ],
+            }
+            generation_plan = {
+                "asset_policies": [
+                    {"slot_id": "slot_visual", "policy": "api_generate", "reason": "illustrative visual"},
+                    {"slot_id": "slot_text", "policy": "editable_text", "reason": "text stays editable"},
+                ]
+            }
+
+            specs = _make_asset_specs(program, reference, out, generation_plan=generation_plan)
+            self.assertEqual([item["slot_id"] for item in specs], ["slot_visual"])
+            self.assertTrue(program["slots"][1]["skip_raster_asset"])
+            self.assertEqual(program["slots"][1]["asset_source_policy"], "editable_text")
+
+    def test_global_generation_policy_preserves_reference_crop_without_api_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = _fixture(root / "pipeline.png")
+            out = root / "rebuild"
+
+            def fake_layout(_path, _base):
+                return {"slots": [{"id": "slot_ui", "asset_id": "slot_ui", "bbox_percent": {"x": 0.05, "y": 0.10, "w": 0.25, "h": 0.22}}]}
+
+            def fake_design(_path, _model):
+                return {
+                    "layers": [{"id": "slot_ui", "kind": "visual_slot", "bbox_percent": {"x": 0.05, "y": 0.10, "w": 0.25, "h": 0.22}, "asset_source_policy": "reference_crop"}],
+                    "asset_policies": [{"slot_id": "slot_ui", "policy": "reference_crop", "reason": "UI evidence crop"}],
+                    "flow_graph": {},
+                }
+
+            with patch("rfs.editable_rebuild._api_generate_asset") as api_call:
+                rebuild_editable(reference, out, asset_mode="api", text_mode="off", vlm_layout_adapter=fake_layout, design_adapter=fake_design)
+
+            api_call.assert_not_called()
+            specs = json.loads((out / "asset_generation_specs.json").read_text(encoding="utf-8"))["specs"]
+            self.assertEqual(specs[0]["asset_source_policy"], "reference_crop")
+            self.assertEqual(specs[0]["policy_source"], "design_plan")
+
     def test_api_mode_preserves_screenshot_crop_without_image_api_call(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

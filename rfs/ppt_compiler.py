@@ -497,6 +497,20 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
     caption_queue = []
     ordered_slots = sorted(program["slots"], key=lambda item: int(item.get("z_index", 20)))
     for slot in ordered_slots:
+        if bool(slot.get("skip_raster_asset")):
+            composition_items.append({
+                "slot_id": slot.get("id"),
+                "asset_id": slot.get("asset_id"),
+                "slot_frame_policy": slot.get("slot_frame_policy", "frameless_slot"),
+                "picture_fill_policy": "skipped_non_raster_policy",
+                "tile_frame_added": False,
+                "caption_inside_image_slot": False,
+                "slot_bbox_percent": slot.get("bbox_percent"),
+                "image_slot_area_fill_percent": None,
+                "status": "skipped_non_raster_asset",
+                "skip_raster_asset_reason": slot.get("skip_raster_asset_reason"),
+            })
+            continue
         x, y, w, h = pct_to_inches(slot["bbox_percent"], width_in, height_in)
         asset_path = out / "assets" / f"{slot['asset_id']}.png"
         tile_added = False

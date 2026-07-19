@@ -54,6 +54,9 @@ REFERENCE_CROP_SEMANTIC_MARKERS = (
     "graph_retrieval",
     "embed_retrieval",
 )
+RASTER_ASSET_POLICIES = {"reference_crop", "api_generate", "placeholder"}
+NON_RASTER_ASSET_POLICIES = {"ppt_shape", "editable_text", "ppt_connector", "ignore"}
+ASSET_SOURCE_POLICIES = RASTER_ASSET_POLICIES | NON_RASTER_ASSET_POLICIES
 
 
 def _bbox(x: float, y: float, w: float, h: float) -> dict[str, float]:
@@ -135,6 +138,34 @@ def _preserve_reference_crop_for_slot(slot: dict, slot_type: str) -> bool:
     prompt_subject = str(slot.get("prompt_subject") or slot.get("paper_concept") or "").lower()
     text = f"{semantic_role} {prompt_subject}"
     return slot_type in REFERENCE_CROP_SLOT_TYPES or any(marker in text for marker in REFERENCE_CROP_SEMANTIC_MARKERS)
+
+
+def _generation_policy_by_slot(generation_plan: dict | None) -> dict[str, dict]:
+    if not isinstance(generation_plan, dict):
+        return {}
+    policies = {}
+    for item in generation_plan.get("asset_policies", []) or []:
+        if not isinstance(item, dict):
+            continue
+        slot_id = str(item.get("slot_id") or item.get("object_id") or item.get("id") or "")
+        if slot_id:
+            policies[slot_id] = item
+    return policies
+
+
+def _asset_source_policy_for_slot(slot: dict, slot_type: str, generation_plan: dict | None) -> tuple[str, str, str, bool]:
+    explicit = str(slot.get("asset_source_policy") or "").strip()
+    if explicit in ASSET_SOURCE_POLICIES:
+        return explicit, str(slot.get("policy_source") or "slot"), str(slot.get("asset_source_reason") or "slot asset source policy"), True
+    policy_record = _generation_policy_by_slot(generation_plan).get(str(slot.get("id") or ""))
+    if policy_record:
+        policy = str(policy_record.get("policy") or policy_record.get("asset_source_policy") or "").strip()
+        if policy in ASSET_SOURCE_POLICIES:
+            return policy, str(policy_record.get("source") or "generation_plan"), str(policy_record.get("reason") or policy_record.get("asset_source_reason") or "global generation policy"), True
+    preserve_reference_crop = _preserve_reference_crop_for_slot(slot, slot_type)
+    if preserve_reference_crop:
+        return "reference_crop", "heuristic", "evidence screenshot/video thumbnails preserve the reference crop", False
+    return "api_generate", "heuristic", "generative rebuild asset", False
 
 
 def _threshold_for_type(slot_type: str) -> tuple[float, float]:
@@ -423,16 +454,24 @@ def _load_accepted_assets(path: Path) -> dict:
     return {}
 
 
-def _make_asset_specs(program: dict, reference_path: Path, out: Path) -> list[dict]:
+def _make_asset_specs(program: dict, reference_path: Path, out: Path, generation_plan: dict | None = None) -> list[dict]:
     specs = []
     background = str(program["canvas"].get("background") or "#FFFFFF")
     for slot in program["slots"]:
         bbox = slot["bbox_percent"]
         slot_type = _slot_type_for_box(slot, program)
+        asset_policy, policy_source, policy_reason, explicit_policy = _asset_source_policy_for_slot(slot, slot_type, generation_plan)
+        slot["asset_source_policy"] = asset_policy
+        slot["policy_source"] = policy_source
+        slot["asset_source_reason"] = policy_reason
+        if asset_policy in NON_RASTER_ASSET_POLICIES:
+            slot["skip_raster_asset"] = True
+            slot["skip_raster_asset_reason"] = policy_reason
+            continue
         fill_min, fill_max = _fill_target_for_type(slot_type)
         slot_ratio = _slot_ratio_for_bbox(bbox, program)
         generation_ratio = _supported_aspect_ratio(slot_ratio, 1.0)
-        preserve_reference_crop = _preserve_reference_crop_for_slot(slot, slot_type)
+        preserve_reference_crop = asset_policy == "reference_crop" or (not explicit_policy and _preserve_reference_crop_for_slot(slot, slot_type))
         crop_path = out / "reference_slot_crops" / f"{slot['id']}.png"
         _crop_reference(reference_path, crop_path, bbox)
         spec = {
@@ -452,8 +491,9 @@ def _make_asset_specs(program: dict, reference_path: Path, out: Path) -> list[di
             "background_color_hex": background,
             "reference_crop_path": str(crop_path),
             "prompt": _asset_prompt(slot, slot_type, background, generation_ratio),
-            "asset_source_policy": "reference_crop" if preserve_reference_crop else "generated_asset",
-            "asset_source_reason": "evidence screenshot/video thumbnails preserve the reference crop" if preserve_reference_crop else "generative rebuild asset",
+            "asset_source_policy": asset_policy,
+            "policy_source": policy_source,
+            "asset_source_reason": policy_reason,
             "preserve_reference_crop": preserve_reference_crop,
             "main_subject_fill_target": round((fill_min + fill_max) / 2, 3),
             "internal_content_fill_target": round((fill_min + fill_max) / 2, 3),
@@ -896,6 +936,7 @@ def rebuild_editable(
             fallback_on_error=True,
         )
     design_logic = design_bundle.get("logic", {}) if isinstance(design_bundle, dict) else {}
+    design_generation_plan = design_bundle.get("generation_plan", {}) if isinstance(design_bundle, dict) else {}
 
     controls_source = "localized"
     reference_controls_raw: dict | None = None
@@ -982,7 +1023,7 @@ def rebuild_editable(
         write_json(out_path / "slot_semantic_report.json", semantic_report)
     write_json(out_path / "slot_inventory.json", {"summary": "Visual asset slot inventory.", "slots": program["slots"]})
 
-    specs = _make_asset_specs(program, archived_reference, out_path)
+    specs = _make_asset_specs(program, archived_reference, out_path, generation_plan=design_generation_plan)
     write_json(out_path / "asset_generation_specs.json", {"summary": "Slot-level asset generation specs.", "asset_mode": asset_mode, "specs": specs})
     regen = set()
     if isinstance(regenerate_slots, str):
@@ -1028,7 +1069,7 @@ def rebuild_editable(
                 program = style_and_route_arrows(program, out_path, mode=arrow_style_mode)
             changed_slots = set(correction_report.get("changed_slot_ids", []) or [])
             if changed_slots:
-                specs = _make_asset_specs(program, archived_reference, out_path)
+                specs = _make_asset_specs(program, archived_reference, out_path, generation_plan=design_generation_plan)
                 write_json(out_path / "asset_generation_specs.json", {"summary": "Slot-level asset generation specs.", "asset_mode": asset_mode, "specs": specs})
                 asset_reports, asset_summary = _generate_assets(specs, program, out_path, asset_mode, asset_workers, asset_retries, economy_mode, changed_slots, strict_asset_regeneration)
             visual_quality_report = run_rebuild_visual_quality_check(
