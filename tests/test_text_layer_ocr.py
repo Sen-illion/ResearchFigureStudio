@@ -39,6 +39,27 @@ def _style() -> dict:
     }
 
 
+def _slot_program() -> dict:
+    program = _base_program()
+    program["panels"] = []
+    program["slots"] = [{
+        "id": "slot_visual",
+        "asset_id": "slot_visual",
+        "paper_concept": "visual card",
+        "bbox_percent": {"x": 0.10, "y": 0.20, "w": 0.40, "h": 0.35},
+        "composition_type": "full_frame_icon",
+        "show_slot_caption": False,
+    }]
+    return program
+
+
+def _canvas_only_program() -> dict:
+    program = _base_program()
+    program["panels"] = []
+    program["slots"] = []
+    return program
+
+
 class TextLayerOcrTests(unittest.TestCase):
     def test_fake_ocr_creates_reference_text_geometry_without_duplicate_panel_title(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -258,6 +279,89 @@ class TextLayerOcrTests(unittest.TestCase):
             self.assertEqual(classification["fallback_count"], 1)
             self.assertEqual(text_program["items"][0]["role"], "panel_title")
             self.assertEqual(text_program["items"][0]["text_role_source"], "heuristic_fallback")
+
+    def test_slot_owned_body_text_is_not_duplicated_as_editable_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            reference = out / "reference.png"
+            Image.new("RGB", (400, 200), "white").save(reference)
+
+            def fake_ocr(_path, _lang):
+                return [{"text": "embedded crop note", "confidence": 0.95, "quad": [[60, 55], [180, 55], [180, 75], [60, 75]]}]
+
+            def fake_grouping(_reference, raw_regions, _heuristic_regions, _program, _model):
+                return {
+                    "groups": [{
+                        "group_id": "slot_body",
+                        "ocr_member_ids": [raw_regions[0]["id"]],
+                        "role": "body_label",
+                        "align": "left",
+                        "confidence": 0.9,
+                    }],
+                    "ignored_ocr_ids": [],
+                }
+
+            build_text_layer(
+                reference,
+                _slot_program(),
+                _style(),
+                out,
+                text_extractor_mode="ocr",
+                ocr_adapter=fake_ocr,
+                text_grouping_mode="vlm",
+                text_grouping_adapter=fake_grouping,
+                text_role_mode="heuristic",
+            )
+
+            text_program = json.loads((out / "text_program.json").read_text(encoding="utf-8"))
+            ownership = json.loads((out / "text_layer_ownership_report.json").read_text(encoding="utf-8"))
+            geometry = json.loads((out / "reference_text_geometry.json").read_text(encoding="utf-8"))
+            self.assertEqual(text_program["items"], [])
+            self.assertEqual(ownership["raster_asset_text_count"], 1)
+            self.assertEqual(geometry["text_regions"][0]["layer_ownership"], "raster_asset_layer")
+
+    def test_body_text_defaults_left_and_font_fit_shrinks_to_bbox(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            reference = out / "reference.png"
+            Image.new("RGB", (400, 200), "white").save(reference)
+
+            def fake_ocr(_path, _lang):
+                return [{
+                    "text": "This is a very long paragraph label that cannot fit",
+                    "confidence": 0.95,
+                    "quad": [[40, 80], [120, 80], [120, 92], [40, 92]],
+                }]
+
+            def fake_grouping(_reference, raw_regions, _heuristic_regions, _program, _model):
+                return {
+                    "groups": [{
+                        "group_id": "body_text",
+                        "ocr_member_ids": [raw_regions[0]["id"]],
+                        "role": "body_label",
+                        "confidence": 0.9,
+                    }],
+                    "ignored_ocr_ids": [],
+                }
+
+            build_text_layer(
+                reference,
+                _canvas_only_program(),
+                _style(),
+                out,
+                text_extractor_mode="ocr",
+                ocr_adapter=fake_ocr,
+                text_grouping_mode="vlm",
+                text_grouping_adapter=fake_grouping,
+                text_role_mode="heuristic",
+            )
+
+            text_program = json.loads((out / "text_program.json").read_text(encoding="utf-8"))
+            item = text_program["items"][0]
+            self.assertEqual(item["role"], "body_label")
+            self.assertEqual(item["align"], "left")
+            self.assertEqual(item["font_fit_status"], "fit_shrunk")
+            self.assertLess(item["font_size_pt"], item["raw_font_size_pt"])
 
 
 if __name__ == "__main__":

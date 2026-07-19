@@ -956,6 +956,8 @@ def rebuild_editable(
             "reference_text_geometry_raw": str(out_path / "reference_text_geometry_raw.json"),
             "text_grouping_plan": str(out_path / "text_grouping_plan.json"),
             "text_grouping_report": str(out_path / "text_grouping_report.json"),
+            "text_layer_ownership_plan": str(out_path / "text_layer_ownership_plan.json"),
+            "text_layer_ownership_report": str(out_path / "text_layer_ownership_report.json"),
             "reference_controls_raw": str(out_path / RAW_CONTROLS_FILENAME),
             "reference_controls": str(out_path / "reference_controls.json"),
             "slot_inventory": str(out_path / "slot_inventory.json"),

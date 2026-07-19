@@ -9,6 +9,7 @@ from PIL import Image
 
 from .reference_text_extractor import extract_reference_text
 from .text_grouping import group_text_regions, write_text_grouping_artifacts
+from .text_layer_ownership import apply_text_layer_ownership, write_text_layer_ownership_artifacts
 from .text_role_classifier import classify_text_roles
 from .utils import write_json, write_text
 
@@ -347,6 +348,41 @@ def _normalize_text_sizes(regions: list[dict], canvas_height_in: float, role_rep
     return text_size_levels, report
 
 
+def _default_align_for_role(role: str) -> str:
+    if role in {"body_label", "annotation", "free_text", "modality_label", "trait_label", "arrow_label"}:
+        return "left"
+    return "center"
+
+
+def _fit_font_size_to_bbox(text: str, font_size: float, bbox: dict, canvas_width_in: float, canvas_height_in: float, role: str) -> tuple[float, dict]:
+    lines = str(text or "").splitlines() or [str(text or "")]
+    longest = max((len(line) for line in lines), default=0)
+    if role not in {"body_label", "annotation", "free_text"} or (len(lines) == 1 and longest < 18):
+        return round(float(font_size), 2), {
+            "font_fit_status": "fit_not_needed",
+            "font_fit_scale": 1.0,
+            "font_fit_min_pt": 5.5 if role in {"panel_title", "section_title"} else 4.5,
+            "font_fit_estimated_width_in": None,
+            "font_fit_estimated_height_in": None,
+        }
+    width_in = max(0.001, float(bbox["w"]) * canvas_width_in)
+    height_in = max(0.001, float(bbox["h"]) * canvas_height_in)
+    font_in = max(0.01, float(font_size) / 72.0)
+    needed_w = max(0.001, longest * font_in * 0.52)
+    needed_h = max(0.001, len(lines) * font_in * 1.18)
+    scale = min(1.0, width_in / needed_w, height_in / needed_h)
+    min_pt = 5.5 if role in {"panel_title", "section_title"} else 4.5
+    fitted = round(max(min_pt, float(font_size) * scale), 2)
+    status = "fit_unchanged" if fitted == round(float(font_size), 2) else "fit_shrunk"
+    return fitted, {
+        "font_fit_status": status,
+        "font_fit_scale": round(fitted / max(float(font_size), 0.001), 4),
+        "font_fit_min_pt": min_pt,
+        "font_fit_estimated_width_in": round(needed_w, 4),
+        "font_fit_estimated_height_in": round(needed_h, 4),
+    }
+
+
 def _escape_md(value: object) -> str:
     return str(value if value is not None else "").replace("|", "\\|").replace("\n", " ")
 
@@ -520,6 +556,7 @@ def build_text_layer(
     out = Path(out_dir)
     canvas = program.get("canvas", {}) if isinstance(program.get("canvas"), dict) else {}
     canvas_height_in = float(canvas.get("height_in") or 7.5)
+    canvas_width_in = float(canvas.get("width_in") or 13.333)
 
     fallback_regions = _heuristic_regions(reference_path, program, canvas_height_in)
     ocr_regions, ocr_report = extract_reference_text(
@@ -567,6 +604,8 @@ def build_text_layer(
     )
     _apply_text_role_classification(regions, role_report)
     text_size_levels, text_size_report = _normalize_text_sizes(regions, canvas_height_in, role_report)
+    regions, ownership_plan, ownership_report = apply_text_layer_ownership(regions, program, mode="heuristic")
+    write_text_layer_ownership_artifacts(out, ownership_plan, ownership_report)
     ocr_report["text_size_normalization"] = {
         "enabled": True,
         "method": "role_aware_median_cluster",
@@ -578,7 +617,10 @@ def build_text_layer(
 
     items: list[dict] = []
     for region in regions:
+        if str(region.get("layer_ownership") or "editable_text_layer") != "editable_text_layer":
+            continue
         font_size = float(region.get("font_size_pt") or _font_pt_from_reference_region(region, canvas_height_in))
+        font_size, font_fit = _fit_font_size_to_bbox(str(region.get("text") or ""), font_size, region["bbox_percent"], canvas_width_in, canvas_height_in, str(region.get("role") or ""))
         token_id = _nearest_token_id(style, region["color_hex"])
         item = {
             "id": f"text_{region['id']}",
@@ -593,6 +635,7 @@ def build_text_layer(
             "height_percent": region["height_percent"],
             "estimated_font_ratio": region["estimated_font_ratio"],
             "font_size_pt": font_size,
+            **font_fit,
             "text_size_level_id": region.get("text_size_level_id"),
             "raw_estimated_font_ratio": region.get("raw_estimated_font_ratio"),
             "raw_font_size_pt": region.get("raw_font_size_pt"),
@@ -605,12 +648,14 @@ def build_text_layer(
             "color_hex": region["color_hex"],
             "color_token_id": token_id,
             "bold": str(region.get("font_weight_guess") or "").lower() == "bold" or region["role"] in {"panel_title", "method_label", "modality_label"},
-            "align": region.get("align") or ("left" if region["role"] in {"modality_label", "trait_label", "arrow_label"} else "center"),
+            "align": region.get("align") or _default_align_for_role(str(region["role"])),
             "font_family_guess": region.get("font_family_guess") or ("Microsoft YaHei" if any(ord(char) > 127 for char in str(region.get("text", ""))) else "Arial"),
             "font_weight_guess": region.get("font_weight_guess") or ("bold" if region["role"] in {"panel_title", "method_label", "modality_label"} else "regular"),
             "fit_strategy": "ocr_bbox_exact" if str(region.get("source", "")).startswith("reference_ocr") else "reference_geometry_bbox",
             "ocr_confidence": region.get("confidence"),
             "editable_in": "pptx",
+            "layer_ownership": region.get("layer_ownership", "editable_text_layer"),
+            "layer_ownership_reason": region.get("layer_ownership_reason"),
             "visible": True,
         }
         items.append(item)
@@ -630,6 +675,9 @@ def build_text_layer(
         "text_grouping_report_path": "text_grouping_report.json",
         "text_grouping_mode": text_grouping_mode,
         "text_grouping_status": grouping_report.get("status"),
+        "text_layer_ownership_plan_path": "text_layer_ownership_plan.json",
+        "text_layer_ownership_report_path": "text_layer_ownership_report.json",
+        "text_layer_ownership_status": ownership_report.get("status"),
         "text_size_normalization_report_path": "text_size_normalization_report.json",
         "text_size_levels": text_size_levels,
         "text_regions": regions,
