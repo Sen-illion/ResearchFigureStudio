@@ -534,6 +534,84 @@ def _merge_ocr_with_fallback(ocr_regions: list[dict], fallback_regions: list[dic
     return merged
 
 
+def _refined_text_value(text: str) -> str:
+    cleaned = " ".join(str(text or "").replace("\u00a0", " ").split())
+    replacements = {
+        "Al": "AI",
+        "A I": "AI",
+        "0utput": "Output",
+        "lnput": "Input",
+    }
+    if cleaned.startswith("Al "):
+        cleaned = "AI " + cleaned[3:]
+    return replacements.get(cleaned, cleaned)
+
+
+def _refine_ocr_regions(regions: list[dict], out: Path) -> tuple[list[dict], dict]:
+    items = []
+    correction_items = []
+    correction_count = 0
+    low_confidence_count = 0
+    for region in regions:
+        raw_text = str(region.get("raw_text") or region.get("text") or "")
+        refined = _refined_text_value(raw_text)
+        changed = refined != raw_text
+        if changed:
+            correction_count += 1
+            region["raw_text"] = raw_text
+            region["text"] = refined
+            region["corrected_text"] = refined
+            region["ocr_refinement_status"] = "corrected"
+            region["ocr_refinement_reason"] = "deterministic_whitespace_or_common_ocr_fix"
+        else:
+            region.setdefault("raw_text", raw_text)
+            region["ocr_refinement_status"] = "unchanged"
+            region["ocr_refinement_reason"] = "no_refinement_needed"
+        try:
+            confidence = float(region.get("confidence"))
+        except Exception:
+            confidence = None
+        low_confidence = confidence is not None and confidence < 0.65
+        if low_confidence:
+            low_confidence_count += 1
+        inferred_or_low = low_confidence or not str(region.get("source") or "").startswith("reference_ocr")
+        region["inferred_or_low_confidence"] = bool(inferred_or_low)
+        item = {
+            "text_id": region.get("id"),
+            "raw_text": raw_text,
+            "refined_text": region.get("text"),
+            "role": region.get("role"),
+            "target_id": region.get("target_id"),
+            "confidence": region.get("confidence"),
+            "source": region.get("source"),
+            "status": region.get("ocr_refinement_status"),
+            "correction_reason": region.get("ocr_refinement_reason"),
+            "inferred_or_low_confidence": bool(inferred_or_low),
+        }
+        items.append(item)
+        if changed:
+            correction_items.append(item)
+    report = {
+        "summary": "OCR refinement report for editable rebuild text geometry.",
+        "mode": "heuristic",
+        "effective_mode": "heuristic",
+        "status": "pass",
+        "text_region_count": len(regions),
+        "correction_count": correction_count,
+        "low_confidence_count": low_confidence_count,
+        "items": items,
+    }
+    corrections = {
+        "summary": "OCR text corrections for editable rebuild; raw OCR is preserved in reference_text_geometry_raw.json.",
+        "mode": "heuristic",
+        "correction_count": correction_count,
+        "items": correction_items,
+    }
+    write_json(out / "ocr_refinement_report.json", report)
+    write_json(out / "ocr_text_corrections.json", corrections)
+    return regions, report
+
+
 def build_text_layer(
     reference_path: str | Path,
     program: dict,
@@ -603,6 +681,7 @@ def build_text_layer(
         fallback_on_error=text_role_fallback_on_error,
     )
     _apply_text_role_classification(regions, role_report)
+    regions, refinement_report = _refine_ocr_regions(regions, out)
     text_size_levels, text_size_report = _normalize_text_sizes(regions, canvas_height_in, role_report)
     regions, ownership_plan, ownership_report = apply_text_layer_ownership(regions, program, mode="heuristic")
     write_text_layer_ownership_artifacts(out, ownership_plan, ownership_report)
@@ -679,6 +758,8 @@ def build_text_layer(
         "text_layer_ownership_plan_path": "text_layer_ownership_plan.json",
         "text_layer_ownership_report_path": "text_layer_ownership_report.json",
         "text_layer_ownership_status": ownership_report.get("status"),
+        "ocr_refinement_report_path": "ocr_refinement_report.json",
+        "ocr_refinement_status": refinement_report.get("status"),
         "text_size_normalization_report_path": "text_size_normalization_report.json",
         "text_size_levels": text_size_levels,
         "text_regions": regions,

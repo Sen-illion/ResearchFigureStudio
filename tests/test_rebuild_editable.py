@@ -618,6 +618,29 @@ class RebuildEditableTests(unittest.TestCase):
             self.assertEqual(specs["specs"][0]["asset_type"], "character")
             self.assertIn("AI Critic", specs["specs"][0]["prompt"])
 
+    def test_ocr_refinement_preserves_raw_text_and_writes_corrections(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = _fixture(root / "pipeline.png")
+            out = root / "rebuild"
+
+            def fake_layout(_path, _base):
+                return {"slots": [{"id": "agent_icon", "asset_id": "agent_icon", "bbox_percent": {"x": 0.40, "y": 0.20, "w": 0.18, "h": 0.30}}]}
+
+            def fake_ocr(_path, _lang):
+                return [{"text": "Al   Agent", "confidence": 0.60, "quad": [[260, 80], [370, 80], [370, 112], [260, 112]]}]
+
+            rebuild_editable(reference, out, asset_mode="placeholder", text_mode="ocr", vlm_layout_adapter=fake_layout, ocr_adapter=fake_ocr, text_role_mode="heuristic")
+            raw = json.loads((out / "reference_text_geometry_raw.json").read_text(encoding="utf-8"))
+            self.assertEqual(raw["text_regions"][0]["text"], "Al   Agent")
+            corrections = json.loads((out / "ocr_text_corrections.json").read_text(encoding="utf-8"))
+            self.assertEqual(corrections["correction_count"], 1)
+            self.assertEqual(corrections["items"][0]["raw_text"], "Al   Agent")
+            self.assertEqual(corrections["items"][0]["refined_text"], "AI Agent")
+            geometry = json.loads((out / "reference_text_geometry.json").read_text(encoding="utf-8"))
+            self.assertEqual(geometry["text_regions"][0]["text"], "AI Agent")
+            self.assertTrue(geometry["text_regions"][0]["inferred_or_low_confidence"])
+
     def test_text_relationship_overrides_nearest_ocr_text_for_slot_semantics(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

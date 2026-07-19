@@ -1212,6 +1212,8 @@ def rebuild_editable(
             "text_grouping_report": str(out_path / "text_grouping_report.json"),
             "text_layer_ownership_plan": str(out_path / "text_layer_ownership_plan.json"),
             "text_layer_ownership_report": str(out_path / "text_layer_ownership_report.json"),
+            "ocr_refinement_report": str(out_path / "ocr_refinement_report.json"),
+            "ocr_text_corrections": str(out_path / "ocr_text_corrections.json"),
             "reference_controls_raw": str(out_path / RAW_CONTROLS_FILENAME),
             "reference_controls": str(out_path / "reference_controls.json"),
             "slot_inventory": str(out_path / "slot_inventory.json"),
