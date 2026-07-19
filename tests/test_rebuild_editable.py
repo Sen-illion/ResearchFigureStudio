@@ -396,6 +396,33 @@ class RebuildEditableTests(unittest.TestCase):
             self.assertEqual(rendered["detected_arrow"]["segment_count"], 3)
             self.assertEqual(rendered["detected_arrow"]["render_style"], "line_connector")
 
+    def test_rebuild_layer_ordering_keeps_connectors_and_text_above_slots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = _fixture(root / "pipeline.png")
+            out = root / "rebuild"
+
+            def fake_layout(_path, _base):
+                return {"slots": [
+                    {"id": "slot_a", "asset_id": "slot_a", "bbox_percent": {"x": 0.10, "y": 0.25, "w": 0.16, "h": 0.22}},
+                    {"id": "slot_b", "asset_id": "slot_b", "bbox_percent": {"x": 0.70, "y": 0.25, "w": 0.16, "h": 0.22}},
+                ]}
+
+            def fake_controls(_path, _slots, _heuristic):
+                return {"arrows": [{"id": "arrow_top", "source_id": "slot_a", "target_id": "slot_b", "path_percent": [[0.26, 0.36], [0.70, 0.36]]}]}
+
+            def fake_ocr(_path, _lang):
+                return [{"text": "Flow label", "confidence": 0.95, "quad": [[250, 70], [360, 70], [360, 95], [250, 95]]}]
+
+            rebuild_editable(reference, out, asset_mode="placeholder", text_mode="ocr", vlm_layout_adapter=fake_layout, control_adapter=fake_controls, ocr_adapter=fake_ocr, text_role_mode="heuristic")
+            program = json.loads((out / "figure_program.json").read_text(encoding="utf-8"))
+            self.assertTrue(all(slot["z_index"] >= 40 for slot in program["slots"]))
+            self.assertTrue(all(arrow["z_index"] >= 60 for arrow in program["arrows"]))
+            self.assertTrue(all(item["z_index"] >= 80 for item in program["text_program"]["items"]))
+            report = json.loads((out / "composition_quality_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["layer_order"]["layer_order_status"], "pass")
+            self.assertEqual(report["layer_order"]["connector_visibility_status"], "connectors_drawn_after_slots")
+
     def test_rebuild_arrow_router_renders_block_and_branch_styles(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

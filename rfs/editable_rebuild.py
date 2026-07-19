@@ -830,6 +830,33 @@ def _apply_rebuild_arrow_routing(program: dict, raw_controls: dict, out: Path, a
     return program, final_doc
 
 
+def _apply_rebuild_layer_ordering(program: dict) -> dict:
+    for index, panel in enumerate(program.get("panels", []) or []):
+        if isinstance(panel, dict):
+            panel["layer_kind"] = "panel"
+            panel["z_index"] = max(int(panel.get("z_index") or 0), 10 + index)
+    for index, card in enumerate(program.get("cards", []) or []):
+        if isinstance(card, dict):
+            card["layer_kind"] = "card"
+            card["z_index"] = max(int(card.get("z_index") or 0), 20 + index)
+            card.setdefault("editable_in", "pptx")
+    for index, slot in enumerate(program.get("slots", []) or []):
+        if isinstance(slot, dict):
+            slot["layer_kind"] = "raster_slot"
+            slot["z_index"] = max(int(slot.get("z_index") or 0), 40 + index)
+    for index, arrow in enumerate(program.get("arrows", []) or []):
+        if isinstance(arrow, dict):
+            arrow["layer_kind"] = "connector"
+            arrow["z_index"] = max(int(arrow.get("z_index") or 0), 60 + index)
+    text_program = program.get("text_program")
+    if isinstance(text_program, dict):
+        for index, item in enumerate(text_program.get("items", []) or []):
+            if isinstance(item, dict):
+                item["layer_kind"] = "editable_text"
+                item["z_index"] = max(int(item.get("z_index") or 0), 80 + index)
+    return program
+
+
 def _program_from_contracts(out: Path, controls_doc: dict | None = None) -> dict:
     geometry = _load_json_or_empty(out / "reference_geometry.json")
     controls = controls_doc if isinstance(controls_doc, dict) else _load_json_or_empty(out / "reference_controls.json")
@@ -867,7 +894,7 @@ def _program_from_contracts(out: Path, controls_doc: dict | None = None) -> dict
     if isinstance(text_program.get("items"), list):
         program["text_program"] = text_program
         program["text_program_path"] = "text_program.json"
-    return program
+    return _apply_rebuild_layer_ordering(program)
 
 
 def _compile_existing_contracts(reference_path: Path, out: Path, export_preview: bool = False, arrow_style_mode: str = "reference") -> dict:
@@ -1082,6 +1109,7 @@ def rebuild_editable(
     elif not semantic_report:
         semantic_report = {"summary": "Semantic planning skipped by --skip-analysis.", "semantic_vlm_status": "skipped", "slots": []}
         write_json(out_path / "slot_semantic_report.json", semantic_report)
+    program = _apply_rebuild_layer_ordering(program)
     write_json(out_path / "slot_inventory.json", {"summary": "Visual asset slot inventory.", "slots": program["slots"]})
 
     specs = _make_asset_specs(program, archived_reference, out_path, generation_plan=design_generation_plan)
@@ -1133,6 +1161,7 @@ def rebuild_editable(
                 specs = _make_asset_specs(program, archived_reference, out_path, generation_plan=design_generation_plan)
                 write_json(out_path / "asset_generation_specs.json", {"summary": "Slot-level asset generation specs.", "asset_mode": asset_mode, "specs": specs})
                 asset_reports, asset_summary = _generate_assets(specs, program, out_path, asset_mode, asset_workers, asset_retries, economy_mode, changed_slots, strict_asset_regeneration)
+            program = _apply_rebuild_layer_ordering(program)
             visual_quality_report = run_rebuild_visual_quality_check(
                 out_path,
                 program,

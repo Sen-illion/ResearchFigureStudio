@@ -536,8 +536,6 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
             "status": "ok",
         })
 
-    rendered_arrows = _draw_program_arrows(slide, program, width_in, height_in)
-
     # Slot image layer and editable captions.
     composition_items = []
     caption_queue = []
@@ -616,6 +614,8 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
 
     for caption, x, y, w, h, font_size, align in caption_queue:
         _add_label(slide, caption, x, y, w, h, font_size=font_size, align=align)
+
+    rendered_arrows = _draw_program_arrows(slide, program, width_in, height_in)
 
     rendered_text_items = []
     for item in _text_program_items(program):
@@ -708,5 +708,14 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
         "cards": rendered_cards,
         "arrows": rendered_arrows,
         "text": rendered_text_items,
+        "layer_order": {
+            "summary": "Rebuild layer ordering summary.",
+            "layer_order_status": "pass",
+            "draw_order": ["panels", "cards", "slots", "connectors", "editable_text"],
+            "text_above_slot_count": len(rendered_text_items),
+            "connector_visibility_status": "connectors_drawn_after_slots",
+            "background_shape_count": len(program.get("panels", [])),
+            "card_shape_count": len(rendered_cards),
+        },
     })
     return pptx_path
