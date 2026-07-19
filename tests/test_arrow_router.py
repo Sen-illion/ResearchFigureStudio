@@ -211,6 +211,7 @@ class ArrowRouterTests(unittest.TestCase):
                         "editable_in": "pptx",
                         "render_policy": "ppt_shape_not_image_asset",
                         "binding_source": "vlm",
+                        "route_policy": "bbox_route_from_hint",
                     },
                 ],
             }
@@ -221,8 +222,10 @@ class ArrowRouterTests(unittest.TestCase):
             block = by_id["stage_transition"]
             self.assertEqual(block["render_style"], "filled_block_arrow")
             self.assertEqual(block["visual_weight"], "chunky")
-            self.assertEqual(block["route_generation_status"], "bbox_route_from_hint")
-            self.assertFalse(block["reference_locked"])
+            self.assertEqual(block["path_percent"], [[0.2, 0.25], [0.38, 0.25]])
+            self.assertEqual(block["route_generation_status"], "reference_locked")
+            self.assertTrue(block["reference_locked"])
+            self.assertTrue(block["reference_path_preserved"])
             self.assertEqual(block["fill_color"], "#AFC6DE")
             self.assertEqual(block["outline_color"], "#3F5063")
 
@@ -231,6 +234,49 @@ class ArrowRouterTests(unittest.TestCase):
             self.assertEqual(turn["route_intent"], "orthogonal")
             self.assertGreaterEqual(len(turn["path_percent"]), 3)
             self.assertEqual(turn["routing_algorithm"], "bbox_route_from_vlm_hint")
+
+    def test_dashed_vlm_reference_path_is_preserved_despite_route_hints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            raw_path = [[0.42, 0.44], [0.46, 0.32], [0.56, 0.32], [0.60, 0.44]]
+            program = {
+                "summary": "Figure program.",
+                "canvas": {"width_in": 10, "height_in": 5},
+                "style": {"color_tokens": [{"token_id": "arrow_001", "hex": "#111111"}]},
+                "panels": [],
+                "slots": [
+                    {"id": "designer", "bbox_percent": {"x": 0.36, "y": 0.40, "w": 0.08, "h": 0.12}},
+                    {"id": "critic", "bbox_percent": {"x": 0.60, "y": 0.40, "w": 0.08, "h": 0.12}},
+                ],
+                "arrows": [{
+                    "id": "stage_ii_loop",
+                    "source_id": "designer",
+                    "target_id": "critic",
+                    "path_percent": raw_path,
+                    "dash_style": "dashed",
+                    "line_pattern": "dash",
+                    "render_style": "line_connector",
+                    "route_intent": "loop",
+                    "preferred_axis": "horizontal",
+                    "bend_side": "above",
+                    "style_token_id": "arrow_001",
+                    "editable_in": "pptx",
+                    "render_policy": "ppt_shape_not_image_asset",
+                    "binding_source": "vlm",
+                    "route_policy": "bbox_route_from_hint",
+                }],
+            }
+
+            result = style_and_route_arrows(program, out, mode="reference")
+            arrow = result["arrows"][0]
+
+            self.assertEqual(arrow["path_percent"], raw_path)
+            self.assertEqual(arrow["render_style"], "line_connector")
+            self.assertEqual(arrow["route_style"], "dashed_spline_like")
+            self.assertEqual(arrow["line_pattern"], "dash")
+            self.assertEqual(arrow["route_generation_status"], "reference_locked")
+            self.assertTrue(arrow["reference_locked"])
+            self.assertTrue(arrow["reference_path_preserved"])
 
     def test_branch_connector_builds_trunk_and_branch_paths(self):
         with tempfile.TemporaryDirectory() as tmp:

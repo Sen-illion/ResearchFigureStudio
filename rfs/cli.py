@@ -8,7 +8,10 @@ from pathlib import Path
 
 from . import __version__
 from .coevolution import analyze_coevolution_run, run_image_coevolution
+from .editable_rebuild import rebuild_editable
 from .presentations_qa import run_presentations_qa
+from .rebuild_vlm_adapters import build_rebuild_vlm_adapters
+from .rebuild_eval import evaluate_rebuild_vlm
 from .utils import env_present, mask_secret
 from .validator import validate_output
 from .workflow import make_framework
@@ -40,6 +43,10 @@ def _doctor() -> dict:
         "RFS_IMAGE_MODEL": {"present": env_present("RFS_IMAGE_MODEL"), "value": os.getenv("RFS_IMAGE_MODEL") if env_present("RFS_IMAGE_MODEL") else "image-2 -> gpt-image-2"},
         "IMAGE_MODEL": {"present": env_present("IMAGE_MODEL"), "value": os.getenv("IMAGE_MODEL") if env_present("IMAGE_MODEL") else None},
         "RFS_LOCATOR_MODEL": {"present": env_present("RFS_LOCATOR_MODEL"), "value": os.getenv("RFS_LOCATOR_MODEL") if env_present("RFS_LOCATOR_MODEL") else None},
+        "RFS_REBUILD_LAYOUT_MODEL": {"present": env_present("RFS_REBUILD_LAYOUT_MODEL"), "value": os.getenv("RFS_REBUILD_LAYOUT_MODEL") if env_present("RFS_REBUILD_LAYOUT_MODEL") else None},
+        "RFS_REBUILD_CONTROL_MODEL": {"present": env_present("RFS_REBUILD_CONTROL_MODEL"), "value": os.getenv("RFS_REBUILD_CONTROL_MODEL") if env_present("RFS_REBUILD_CONTROL_MODEL") else None},
+        "RFS_REBUILD_SEMANTIC_MODEL": {"present": env_present("RFS_REBUILD_SEMANTIC_MODEL"), "value": os.getenv("RFS_REBUILD_SEMANTIC_MODEL") if env_present("RFS_REBUILD_SEMANTIC_MODEL") else None},
+        "RFS_REBUILD_TEXT_MODEL": {"present": env_present("RFS_REBUILD_TEXT_MODEL"), "value": os.getenv("RFS_REBUILD_TEXT_MODEL") if env_present("RFS_REBUILD_TEXT_MODEL") else None},
         "RFS_PROMPT_PLANNER_MODEL": {"present": env_present("RFS_PROMPT_PLANNER_MODEL"), "value": os.getenv("RFS_PROMPT_PLANNER_MODEL") if env_present("RFS_PROMPT_PLANNER_MODEL") else None},
         "RFS_TEXT_ROLE_MODEL": {"present": env_present("RFS_TEXT_ROLE_MODEL"), "value": os.getenv("RFS_TEXT_ROLE_MODEL") if env_present("RFS_TEXT_ROLE_MODEL") else None},
         "RFS_ONLINE_JUDGE_MODEL": {"present": env_present("RFS_ONLINE_JUDGE_MODEL"), "value": os.getenv("RFS_ONLINE_JUDGE_MODEL") if env_present("RFS_ONLINE_JUDGE_MODEL") else None},
@@ -112,6 +119,39 @@ def build_parser() -> argparse.ArgumentParser:
     make.add_argument("--no-export", action="store_true", help="Skip PDF/PNG export and only create PPTX/artifacts.")
     make.add_argument("--json", action="store_true", help="Emit JSON.")
 
+    rebuild = sub.add_parser("rebuild-editable", help="Rebuild a reference image into a reusable editable PowerPoint composition.")
+    rebuild.add_argument("--reference", required=True, help="Reference image path.")
+    rebuild.add_argument("--out", required=True, help="Output directory.")
+    rebuild.add_argument("--asset-mode", choices=["api", "crop", "placeholder"], default="api", help="Slot asset source. Default api uses GEMINI_GEN_IMG_URL.")
+    rebuild.add_argument("--asset-workers", type=int, default=4, help="Parallel asset workers, clamped by the pipeline to 1-12. Default: 4.")
+    rebuild.add_argument("--asset-retries", type=int, default=1, help="Retries per slot in strict mode. Default: 1.")
+    rebuild.add_argument("--economy-mode", dest="economy_mode", action="store_true", default=True, help="Reuse accepted/passing assets and generate each failed slot once. Enabled by default.")
+    rebuild.add_argument("--no-economy-mode", dest="economy_mode", action="store_false", help="Disable economy reuse decisions.")
+    rebuild.add_argument("--text-mode", choices=["ocr", "manual", "off"], default="ocr", help="Editable text extraction mode. Default: ocr.")
+    rebuild.add_argument("--text-role-mode", choices=["heuristic", "vlm"], default="vlm", help="Text role classification source. Default: vlm with heuristic fallback.")
+    rebuild.add_argument("--text-role-model", help="Optional VLM model for --text-role-mode vlm. Defaults to RFS_TEXT_ROLE_MODEL/MODEL_VLM.")
+    rebuild.add_argument("--text-intelligence-mode", choices=["off", "heuristic", "vlm"], default="vlm", help="Text intelligence source for font style, relationships, and layout intent reports. Default: vlm with heuristic fallback.")
+    rebuild.add_argument("--text-intelligence-model", help="Optional VLM model for --text-intelligence-mode vlm. Defaults to RFS_REBUILD_TEXT_MODEL/RFS_TEXT_ROLE_MODEL/MODEL_VLM.")
+    rebuild.add_argument("--layout-mode", choices=["heuristic", "vlm", "hybrid"], default="hybrid", help="Panel/card/slot layout extraction mode. Default: hybrid.")
+    rebuild.add_argument("--control-mode", choices=["heuristic", "vlm", "hybrid", "manual"], default="hybrid", help="Arrow/control extraction mode. Default: hybrid.")
+    rebuild.add_argument("--arrow-style-mode", choices=["off", "reference", "aesthetic"], default="reference", help="Arrow styling/routing mode for editable rebuild. Default: reference.")
+    rebuild.add_argument("--export-preview", action="store_true", help="Export a PNG preview when PowerPoint is available.")
+    rebuild.add_argument("--regenerate-slots", help="Comma-separated slot ids to regenerate even when an existing asset is present.")
+    rebuild.add_argument("--strict-asset-regeneration", action="store_true", help="Use stricter asset thresholds and --asset-retries for high-cost regeneration.")
+    rebuild.add_argument("--skip-analysis", action="store_true", help="Reuse existing JSON contracts in --out instead of re-running layout/control/semantic analysis.")
+    rebuild.add_argument("--compile-only", action="store_true", help="Compile editable_composition.pptx from existing JSON contracts and assets without regenerating analysis or assets.")
+    rebuild.add_argument("--ocr-engine", choices=["paddle", "easyocr", "off"], default="paddle", help="OCR engine for --text-mode ocr. Default: paddle.")
+    rebuild.add_argument("--ocr-lang", choices=["en", "ch", "en_ch"], default="en_ch", help="OCR language hint. Default: en_ch.")
+    rebuild.add_argument("--json", action="store_true", help="Emit JSON.")
+
+    rebuild_eval = sub.add_parser("rebuild-editable-eval", help="Compare heuristic and hybrid VLM rebuild-editable outputs for one reference image.")
+    rebuild_eval.add_argument("--reference", required=True, help="Reference image path.")
+    rebuild_eval.add_argument("--out", required=True, help="Evaluation output directory.")
+    rebuild_eval.add_argument("--asset-mode", choices=["api", "crop", "placeholder"], default="crop", help="Asset mode for both cases. Default: crop to avoid image generation cost.")
+    rebuild_eval.add_argument("--text-mode", choices=["ocr", "manual", "off"], default="ocr", help="Text extraction mode for both cases. Default: ocr.")
+    rebuild_eval.add_argument("--export-preview", action="store_true", help="Export PNG previews when PowerPoint is available.")
+    rebuild_eval.add_argument("--json", action="store_true", help="Emit JSON.")
+
     coevolve = sub.add_parser("coevolve-image", help="Refine a complete scientific image through Creator Agent and Online/Frozen Judges.")
     coevolve.add_argument("--ground-truth", required=True, help="Structured Ground Truth JSON containing paper facts and human aesthetic preferences.")
     coevolve.add_argument("--out", required=True, help="Output directory for rounds, training trajectories, and approved_image.png.")
@@ -145,7 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _print_human(data: dict) -> None:
     if "ok" in data:
         print(f"ok: {data['ok']}")
-    for key in ["out_dir", "approved_image", "thresholds_met", "stop_reason", "rounds_completed", "online_judge_model", "frozen_judge_model", "weak_judge_isolation", "pptx", "pdf", "png", "asset_count", "slot_count", "slot_source", "asset_mode", "candidates_per_slot", "asset_workers", "asset_retries", "asset_review_mode", "locator_mode", "control_localizer_mode", "arrow_style_mode", "prompt_plan_mode", "prompt_plan_workers", "complexity_profile", "critic_mode", "critic_iterations", "text_extractor_mode", "ocr_engine", "ocr_lang", "text_role_mode", "text_role_model"]:
+    for key in ["out_dir", "approved_image", "thresholds_met", "stop_reason", "rounds_completed", "online_judge_model", "frozen_judge_model", "weak_judge_isolation", "pptx", "pdf", "png", "preview", "asset_count", "slot_count", "slot_source", "asset_mode", "asset_workers", "asset_retries", "economy_mode", "api_requests_attempted", "text_count", "connector_count", "text_mode", "layout_mode", "control_mode", "compile_only", "candidates_per_slot", "asset_review_mode", "locator_mode", "control_localizer_mode", "arrow_style_mode", "prompt_plan_mode", "prompt_plan_workers", "complexity_profile", "critic_mode", "critic_iterations", "text_extractor_mode", "ocr_engine", "ocr_lang", "text_role_mode", "text_role_effective_mode", "text_role_model", "text_intelligence_mode", "text_intelligence_effective_mode", "text_intelligence_model"]:
         if key in data:
             print(f"{key}: {data[key]}")
     if data.get("presentations_qa"):
@@ -212,6 +252,43 @@ def main(argv: list[str] | None = None) -> int:
                 presentations_workspace=args.presentations_workspace,
                 presentations_scale=args.presentations_scale,
                 export=not args.no_export,
+            )
+        elif args.command == "rebuild-editable":
+            rebuild_adapters = build_rebuild_vlm_adapters(args.out)
+            result = rebuild_editable(
+                reference=args.reference,
+                out=args.out,
+                asset_mode=args.asset_mode,
+                asset_workers=args.asset_workers,
+                asset_retries=args.asset_retries,
+                economy_mode=args.economy_mode,
+                text_mode=args.text_mode,
+                control_mode=args.control_mode,
+                layout_mode=args.layout_mode,
+                export_preview=args.export_preview,
+                regenerate_slots=args.regenerate_slots,
+                strict_asset_regeneration=args.strict_asset_regeneration,
+                skip_analysis=args.skip_analysis,
+                compile_only=args.compile_only,
+                ocr_engine=args.ocr_engine,
+                ocr_lang=args.ocr_lang,
+                text_role_mode=args.text_role_mode,
+                text_role_model=args.text_role_model,
+                text_intelligence_mode=args.text_intelligence_mode,
+                text_intelligence_model=args.text_intelligence_model,
+                arrow_style_mode=args.arrow_style_mode,
+                text_intelligence_adapter=rebuild_adapters["text_intelligence"] if args.text_intelligence_mode == "vlm" else None,
+                vlm_layout_adapter=rebuild_adapters["layout"] if args.layout_mode in {"vlm", "hybrid"} else None,
+                control_adapter=rebuild_adapters["control"] if args.control_mode in {"vlm", "hybrid"} else None,
+                semantic_adapter=rebuild_adapters["semantic"] if args.layout_mode in {"vlm", "hybrid"} or args.control_mode in {"vlm", "hybrid"} else None,
+            )
+        elif args.command == "rebuild-editable-eval":
+            result = evaluate_rebuild_vlm(
+                reference=args.reference,
+                out=args.out,
+                asset_mode=args.asset_mode,
+                text_mode=args.text_mode,
+                export_preview=args.export_preview,
             )
         elif args.command == "coevolve-image":
             result = run_image_coevolution(

@@ -120,6 +120,94 @@ $env:RFS_CONTROL_LOCALIZER_MODEL=$env:MODEL_VLM
 $env:RFS_IMAGE_MODEL='image-2'
 ```
 
+For the reference-only image-to-editable-PPT workflow, configure the same VLM
+credentials plus the image-generation endpoint:
+
+```powershell
+$env:API_BASE='https://your-openai-compatible-provider/v1'
+$env:API_KEY='<your key>'
+$env:MODEL_VLM='your-vision-language-model'
+
+# Optional model overrides for rfs rebuild-editable.
+$env:RFS_REBUILD_LAYOUT_MODEL=$env:MODEL_VLM
+$env:RFS_REBUILD_CONTROL_MODEL=$env:MODEL_VLM
+$env:RFS_REBUILD_SEMANTIC_MODEL=$env:MODEL_VLM
+
+# Required only for --asset-mode api slot-level image generation.
+$env:GEMINI_API_KEY=$env:API_KEY
+$env:GEMINI_GEN_IMG_URL='https://your-provider/v1beta/models/your-image-model:generateContent'
+```
+
+Best quality, using VLM layout/control/semantic planning plus generated slot
+assets:
+
+```powershell
+rfs rebuild-editable `
+  --reference "C:\path\figure.png" `
+  --out "output\editable_rebuild" `
+  --asset-mode api `
+  --layout-mode hybrid `
+  --control-mode hybrid `
+  --text-mode ocr `
+  --export-preview
+```
+
+Lower-cost mode, using VLM structure planning but keeping reference crops as
+slot assets:
+
+```powershell
+rfs rebuild-editable `
+  --reference "C:\path\figure.png" `
+  --out "output\editable_rebuild_crop" `
+  --asset-mode crop `
+  --layout-mode hybrid `
+  --control-mode hybrid
+```
+
+Offline smoke test with no API:
+
+```powershell
+rfs rebuild-editable `
+  --reference "C:\path\figure.png" `
+  --out "output\editable_rebuild_placeholder" `
+  --asset-mode placeholder `
+  --layout-mode heuristic `
+  --control-mode heuristic
+```
+
+The rebuild workflow writes `reference_geometry_overlay.png` and
+`reference_controls_overlay.png` for inspection. If the automatic layout or
+arrows need correction, edit `reference_geometry.json` or
+`reference_controls_raw.json`; `reference_controls.json` is the routed
+PPT-ready controls contract. Recompile without another API call:
+
+```powershell
+rfs rebuild-editable `
+  --reference "C:\path\figure.png" `
+  --out "output\editable_rebuild" `
+  --compile-only
+```
+
+To validate whether VLM planning is improving a given reference image, run the
+paired evaluator. It creates `case_heuristic` and `case_vlm` outputs under the
+same directory and defaults to `--asset-mode crop` so it does not spend image
+generation credits:
+
+```powershell
+rfs rebuild-editable-eval `
+  --reference "C:\path\figure.png" `
+  --out "output\editable_rebuild_eval" `
+  --asset-mode crop `
+  --export-preview
+```
+
+Review `rebuild_vlm_eval_summary.json`,
+`case_heuristic/reference_geometry_overlay.png`, and
+`case_vlm/reference_geometry_overlay.png` before running a full
+`--asset-mode api` rebuild. Each rebuild also writes
+`rebuild_vlm_validation_report.json` with layout/control/semantic validation
+counts, fallback status, and API request counts.
+
 Recommended real run:
 
 ```powershell

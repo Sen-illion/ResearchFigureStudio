@@ -509,6 +509,7 @@ def build_text_layer(
     text_role_mode: str = "heuristic",
     text_role_model: str | None = None,
     text_role_adapter: Callable[[str | Path, list[dict], dict, str | None], dict] | None = None,
+    text_role_fallback_on_error: bool = False,
 ) -> dict:
     """Build reference-first editable text artifacts and attach them to the program."""
 
@@ -540,6 +541,7 @@ def build_text_layer(
         mode=text_role_mode,
         model=text_role_model,
         adapter=text_role_adapter,
+        fallback_on_error=text_role_fallback_on_error,
     )
     _apply_text_role_classification(regions, role_report)
     text_size_levels, text_size_report = _normalize_text_sizes(regions, canvas_height_in, role_report)
@@ -548,6 +550,7 @@ def build_text_layer(
         "method": "role_aware_median_cluster",
         "level_count": len(text_size_levels),
         "text_role_mode": text_role_mode,
+        "text_role_effective_mode": role_report.get("effective_mode"),
         "text_role_status": role_report.get("status"),
     }
 
@@ -598,6 +601,7 @@ def build_text_layer(
         "ocr_engine": ocr_engine,
         "ocr_lang": ocr_lang,
         "text_role_mode": text_role_mode,
+        "text_role_effective_mode": role_report.get("effective_mode"),
         "text_role_classification_path": "text_role_classification.json",
         "text_size_normalization_report_path": "text_size_normalization_report.json",
         "text_size_levels": text_size_levels,

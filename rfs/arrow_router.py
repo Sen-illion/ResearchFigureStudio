@@ -570,7 +570,7 @@ def _normalize_route_hints(arrow: dict, role: str) -> None:
     route_intent = _coerce_choice(arrow.get("route_intent"), VALID_ROUTE_INTENTS, "")
     visual_weight = _coerce_choice(arrow.get("visual_weight"), VALID_VISUAL_WEIGHTS, "normal")
     preferred_axis = _coerce_choice(arrow.get("preferred_axis"), VALID_PREFERRED_AXES, "")
-    line_pattern = _coerce_choice(arrow.get("line_pattern"), VALID_LINE_PATTERNS, "solid")
+    line_pattern = _coerce_choice(arrow.get("line_pattern") or arrow.get("dash_style"), VALID_LINE_PATTERNS, "solid")
     render_style = _coerce_choice(arrow.get("render_style"), VALID_RENDER_STYLES, "")
     combined = " ".join(str(arrow.get(key, "")) for key in ("control_kind", "type", "route_intent", "visual_weight", "visual_metaphor", "label")).lower()
 
@@ -619,6 +619,8 @@ def _normalize_route_hints(arrow: dict, role: str) -> None:
 def _style_for_render(render_style: str, arrow: dict, role: str, mode: str) -> dict[str, Any]:
     base = _style_for_role(role, arrow, mode=mode)
     weight = str(arrow.get("visual_weight") or "normal").lower()
+    line_pattern = _coerce_choice(arrow.get("line_pattern") or arrow.get("dash_style"), VALID_LINE_PATTERNS, "solid")
+    route_intent = str(arrow.get("route_intent") or "").lower()
     if render_style == "filled_block_arrow":
         base.update({
             "route_style": "filled_block_arrow",
@@ -631,7 +633,9 @@ def _style_for_render(render_style: str, arrow: dict, role: str, mode: str) -> d
             "block_arrow_thickness_percent": 0.052,
         })
     elif render_style == "line_connector":
-        if role not in {"branch", "convergence"}:
+        if line_pattern in {"dash", "dashed"} or route_intent == "loop":
+            base.update({"route_style": "dashed_spline_like", "line_pattern": "dash"})
+        elif role not in {"branch", "convergence"}:
             base.update({"route_style": "soft_straight"})
         base.update({"line_cap": "round"})
     elif render_style == "elbow_connector":
@@ -653,6 +657,8 @@ def _style_for_render(render_style: str, arrow: dict, role: str, mode: str) -> d
 def _reference_locked(arrow: dict) -> bool:
     path = arrow.get("path_percent") if isinstance(arrow.get("path_percent"), list) else []
     if len(path) < 2:
+        return False
+    if str(arrow.get("route_policy", "")).lower() == "fallback_reroute_allowed":
         return False
     source = str(arrow.get("binding_source") or arrow.get("detected_by") or "").lower()
     if any(term in source for term in ("reference", "opencv", "vlm", "explicit", "candidate", "layout")):
@@ -750,16 +756,13 @@ def style_and_route_arrows(
         arrow["source"] = source
         arrow["target"] = target
         role = _infer_role(arrow, out_counts, in_counts, panel_ids)
-        has_vlm_route_hint = str(arrow.get("binding_source", "")).lower() == "vlm" and any(
-            str(arrow.get(key, "")).strip()
-            for key in ("render_style", "route_intent", "visual_weight", "preferred_axis", "bend_side")
-        )
         _normalize_route_hints(arrow, role)
         points = arrow.get("path_percent") if isinstance(arrow.get("path_percent"), list) else []
+        points = _clean_path(points)
         locked = _reference_locked(arrow)
         route_meta: dict[str, Any] = {"routing_algorithm": "preserve_reference_path", "route_generation_status": "reference_locked"}
         fallback_allowed = str(arrow.get("route_policy", "")).lower() == "fallback_reroute_allowed"
-        bbox_reroute = has_vlm_route_hint or str(arrow.get("route_policy", "")).lower() == "bbox_route_from_hint"
+        bbox_reroute = str(arrow.get("route_policy", "")).lower() == "bbox_route_from_hint" and len(points) < 2
         branch_data = None
         if arrow.get("render_style") == "branch_line_connector":
             branch_data = _branch_paths(arrow, objects)
@@ -810,11 +813,11 @@ def style_and_route_arrows(
         if recompute_generated_style or not str(arrow.get("semantic_role", "")).strip():
             arrow["semantic_role"] = role
         arrow.setdefault("aesthetic_policy", "reference_first_soft_editable_ppt_connector")
-        arrow.setdefault("reference_locked", locked)
-        arrow.setdefault("reference_path_preserved", locked)
+        arrow["reference_locked"] = bool(locked)
+        arrow["reference_path_preserved"] = bool(locked)
         arrow.setdefault("route_policy", "preserve_reference_path" if locked else "synthesize_missing_path_only")
-        arrow.setdefault("routing_algorithm", route_meta.get("routing_algorithm", ROUTER_VERSION))
-        arrow.setdefault("route_generation_status", route_meta.get("route_generation_status", "fallback_route_selected" if not locked else "reference_locked"))
+        arrow["routing_algorithm"] = route_meta.get("routing_algorithm", ROUTER_VERSION)
+        arrow["route_generation_status"] = route_meta.get("route_generation_status", "fallback_route_selected" if not locked else "reference_locked")
         if "candidate_count" in route_meta:
             arrow.setdefault("candidate_count", route_meta["candidate_count"])
         if "candidate_score" in route_meta:

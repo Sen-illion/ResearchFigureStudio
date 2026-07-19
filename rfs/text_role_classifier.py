@@ -219,6 +219,7 @@ def classify_text_roles(
     mode: str = "heuristic",
     model: str | None = None,
     adapter: Callable[[str | Path, list[dict], dict, str | None], dict] | None = None,
+    fallback_on_error: bool = False,
 ) -> dict:
     requested_mode = str(mode or "heuristic").lower()
     base = {str(region.get("id") or ""): _heuristic_decision(region) for region in regions}
@@ -229,6 +230,7 @@ def classify_text_roles(
         "model": model or os.getenv("RFS_TEXT_ROLE_MODEL") or os.getenv("MODEL_VLM"),
         "text_region_count": len(regions),
         "items": list(base.values()),
+        "effective_mode": "heuristic" if requested_mode == "heuristic" or not regions else requested_mode,
         "fallback_count": 0,
         "warnings": [],
     }
@@ -237,9 +239,30 @@ def classify_text_roles(
     if requested_mode != "vlm":
         raise ValueError(f"Unsupported text role mode: {mode}")
 
-    raw = adapter(reference_path, regions, program, model) if adapter else _call_vlm_text_roles(reference_path, regions, program, model=model)
+    try:
+        raw = adapter(reference_path, regions, program, model) if adapter else _call_vlm_text_roles(reference_path, regions, program, model=model)
+    except Exception as exc:
+        if not fallback_on_error:
+            raise
+        report.update({
+            "status": "fallback_to_heuristic",
+            "effective_mode": "heuristic",
+            "fallback_reason": f"vlm_text_role_failed:{exc}",
+            "items": list(base.values()),
+        })
+        report["warnings"].append(str(report["fallback_reason"]))
+        return report
     raw_items = raw.get("items") or raw.get("text_roles") or []
     if not isinstance(raw_items, list):
+        if fallback_on_error:
+            report.update({
+                "status": "fallback_to_heuristic",
+                "effective_mode": "heuristic",
+                "fallback_reason": "vlm_text_role_failed:missing_items_list",
+                "items": list(base.values()),
+            })
+            report["warnings"].append(str(report["fallback_reason"]))
+            return report
         raise RuntimeError("VLM text role classification returned no items list")
     raw_by_id = {str(item.get("text_id") or item.get("id") or ""): item for item in raw_items if isinstance(item, dict)}
 
@@ -303,6 +326,7 @@ def classify_text_roles(
         })
     report.update({
         "status": "pass_with_item_fallbacks" if fallback_count else "pass",
+        "effective_mode": "vlm",
         "items": items,
         "fallback_count": fallback_count,
         "raw_summary": raw.get("summary"),
