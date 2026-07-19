@@ -1,9 +1,24 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from .layout_semantic_planner import ASSET_TYPES
 from .utils import write_json
+
+
+ASSET_POLICIES = {"reference_crop", "api_generate", "placeholder", "ppt_shape", "editable_text", "ppt_connector", "ignore"}
+NON_RASTER_POLICIES = {"ppt_shape", "editable_text", "ppt_connector", "ignore"}
+
+
+def _read_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _valid_bbox(bbox: dict | None) -> bool:
@@ -121,6 +136,34 @@ def build_rebuild_vlm_validation_report(
     text_intelligence = text_intelligence_report or {}
     if text_intelligence.get("status") == "fallback_to_heuristic":
         warnings.append("text intelligence VLM fell back to heuristic")
+    out_path = Path(out_dir)
+    logic_plan = _read_json(out_path / "reference_logic_plan.json")
+    layer_plan = _read_json(out_path / "reference_layer_plan.json")
+    generation_plan = _read_json(out_path / "reference_generation_plan.json")
+    flow_graph = _read_json(out_path / "reference_flow_graph.json")
+    policies = [item for item in generation_plan.get("asset_policies", []) or [] if isinstance(item, dict)]
+    invalid_policies = [
+        str(item.get("slot_id") or item.get("object_id") or item.get("id") or "")
+        for item in policies
+        if str(item.get("policy") or item.get("asset_source_policy") or "") not in ASSET_POLICIES
+    ]
+    asset_records = [item for item in (asset_summary or {}).get("assets", []) or [] if isinstance(item, dict)]
+    non_raster_assets = [
+        str(item.get("slot_id") or item.get("asset_id") or "")
+        for item in asset_records
+        if str(item.get("asset_source_policy") or "") in NON_RASTER_POLICIES
+    ]
+    if invalid_policies:
+        warnings.append(f"{len(invalid_policies)} invalid asset source policy value(s)")
+    if non_raster_assets:
+        warnings.append(f"{len(non_raster_assets)} non-raster policy asset(s) were generated")
+    flow_edges = [item for item in flow_graph.get("edges", []) or [] if isinstance(item, dict)]
+    object_ids = {str(item.get("id")) for item in panels + cards + slots if isinstance(item, dict)}
+    unbound_flow_edges = [
+        str(edge.get("id") or "")
+        for edge in flow_edges
+        if str(edge.get("source_id") or "") not in object_ids or str(edge.get("target_id") or "") not in object_ids
+    ]
 
     report = {
         "summary": "VLM adapter validation report for rebuild-editable.",
@@ -186,6 +229,21 @@ def build_rebuild_vlm_validation_report(
             "fallback_count": text_intelligence.get("fallback_count", 0),
             "fallback_reason": text_intelligence.get("fallback_reason"),
             "warnings": text_intelligence.get("warnings", []),
+        },
+        "design_plan": {
+            "mode": logic_plan.get("mode"),
+            "effective_mode": logic_plan.get("effective_mode"),
+            "status": logic_plan.get("status") or ("missing" if not logic_plan else None),
+            "model": logic_plan.get("model"),
+            "fallback_reason": logic_plan.get("fallback_reason"),
+            "fallback_reason_present": bool(logic_plan.get("fallback_reason")) if logic_plan else False,
+            "layer_count": layer_plan.get("layer_count", len(layer_plan.get("layers", []) or [])),
+            "asset_policy_count": len(policies),
+            "invalid_asset_policy_ids": invalid_policies,
+            "policy_coverage_percent": round(len(policies) / max(len(slots), 1) * 100, 2),
+            "non_raster_policy_asset_ids": non_raster_assets,
+            "flow_graph_edge_count": len(flow_edges),
+            "unbound_flow_edge_ids": unbound_flow_edges,
         },
         "semantic": {
             "semantic_vlm_status": semantic_report.get("semantic_vlm_status"),

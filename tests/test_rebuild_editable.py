@@ -781,6 +781,7 @@ class RebuildEditableTests(unittest.TestCase):
             self.assertIn("card_a", report["layout"]["cards_missing_style_ids"])
             self.assertIn("bad_arrow", report["control"]["invalid_arrow_ids"])
             self.assertIn("slot_a", report["semantic"]["invalid_asset_type_ids"])
+            self.assertEqual(report["design_plan"]["status"], "missing")
 
     def test_real_vlm_layout_adapter_uses_shared_client_and_model_env(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1085,6 +1086,10 @@ class RebuildEditableTests(unittest.TestCase):
             self.assertFalse(summary["image_generation_api_expected"])
             self.assertEqual(summary["cases"]["heuristic"]["api_requests_attempted"], 0)
             self.assertEqual(summary["cases"]["vlm"]["api_requests_attempted"], 0)
+            self.assertIn("global_design", summary["cases"])
+            self.assertIn("global_policy", summary["cases"])
+            self.assertIn("global_flow", summary["cases"])
+            self.assertIn("global_ocr", summary["cases"])
             self.assertTrue((root / "eval" / "rebuild_vlm_eval_summary.json").exists())
 
     def test_rebuild_vlm_adapter_factory_requires_credentials(self):
