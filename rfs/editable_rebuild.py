@@ -20,7 +20,7 @@ from .layout_semantic_planner import plan_slot_semantics
 from .ppt_compiler import compile_ppt
 from .rebuild_text_intelligence import plan_rebuild_text_intelligence
 from .rebuild_vlm_validation import build_rebuild_vlm_validation_report
-from .rebuild_visual_critic import run_rebuild_visual_quality_check
+from .rebuild_visual_critic import apply_rebuild_corrections, run_rebuild_visual_critic, run_rebuild_visual_quality_check
 from .text_layer import build_text_layer
 from .utils import ensure_dir, write_json, write_text
 
@@ -770,6 +770,9 @@ def rebuild_editable(
     text_intelligence_mode: str = "vlm",
     text_intelligence_model: str | None = None,
     arrow_style_mode: str = "reference",
+    rebuild_critic_mode: str = "off",
+    rebuild_critic_iterations: int = 0,
+    rebuild_critic_model: str | None = None,
     ocr_adapter: Callable | None = None,
     text_grouping_adapter: Callable | None = None,
     text_role_adapter: Callable | None = None,
@@ -799,6 +802,9 @@ def rebuild_editable(
         "text_role_model": text_role_model,
         "text_intelligence_mode": text_intelligence_mode,
         "text_intelligence_model": text_intelligence_model,
+        "rebuild_critic_mode": rebuild_critic_mode,
+        "rebuild_critic_iterations": rebuild_critic_iterations,
+        "rebuild_critic_model": rebuild_critic_model,
         "control_mode": control_mode,
         "layout_mode": layout_mode,
         "arrow_style_mode": arrow_style_mode,
@@ -911,6 +917,46 @@ def rebuild_editable(
     write_json(out_path / "figure_program.json", program)
     pptx_path = compile_ppt(program, out_path)
     preview = _export_preview(pptx_path, out_path) if export_preview else None
+    critic_iterations = max(0, min(3, int(rebuild_critic_iterations)))
+    critic_reports = []
+    correction_reports = []
+    if critic_iterations and rebuild_critic_mode != "off":
+        for iteration in range(critic_iterations):
+            if preview is None:
+                preview = _export_preview(pptx_path, out_path)
+            critic_report = run_rebuild_visual_critic(
+                out_path,
+                archived_reference,
+                preview,
+                program,
+                visual_quality_report,
+                mode=rebuild_critic_mode,
+                model=rebuild_critic_model,
+                iteration=iteration,
+            )
+            critic_reports.append(critic_report)
+            if not critic_report.get("patches"):
+                break
+            program, correction_report = apply_rebuild_corrections(out_path, program, critic_report, iteration=iteration)
+            correction_reports.append(correction_report)
+            if correction_report.get("changed_arrows"):
+                program = style_and_route_arrows(program, out_path, mode=arrow_style_mode)
+            changed_slots = set(correction_report.get("changed_slot_ids", []) or [])
+            if changed_slots:
+                specs = _make_asset_specs(program, archived_reference, out_path)
+                write_json(out_path / "asset_generation_specs.json", {"summary": "Slot-level asset generation specs.", "asset_mode": asset_mode, "specs": specs})
+                asset_reports, asset_summary = _generate_assets(specs, program, out_path, asset_mode, asset_workers, asset_retries, economy_mode, changed_slots, strict_asset_regeneration)
+            visual_quality_report = run_rebuild_visual_quality_check(
+                out_path,
+                program,
+                reference_geometry=reference_geometry,
+                reference_controls=reference_controls,
+                ownership_report=_load_json_or_empty(out_path / "text_layer_ownership_report.json"),
+                mode=rebuild_critic_mode,
+            )
+            write_json(out_path / "figure_program.json", program)
+            pptx_path = compile_ppt(program, out_path)
+            preview = _export_preview(pptx_path, out_path)
 
     counts = _ppt_package_counts(pptx_path, archived_reference)
     report_path = out_path / "composition_quality_report.json"
@@ -952,6 +998,10 @@ def rebuild_editable(
         "text_intelligence_mode": text_intelligence_mode,
         "text_intelligence_effective_mode": text_intelligence_report.get("effective_mode"),
         "text_intelligence_model": text_intelligence_model,
+        "rebuild_critic_mode": rebuild_critic_mode,
+        "rebuild_critic_iterations": critic_iterations,
+        "rebuild_critic_model": rebuild_critic_model,
+        "rebuild_critic_status": (critic_reports[-1].get("status") if critic_reports else "skipped"),
         "arrow_style_mode": arrow_style_mode,
         "control_mode": control_mode,
         "layout_mode": layout_mode,
@@ -977,6 +1027,7 @@ def rebuild_editable(
             "text_layout_intent_report": str(out_path / "text_layout_intent_report.json"),
             "rebuild_vlm_validation_report": str(out_path / "rebuild_vlm_validation_report.json"),
             "rebuild_visual_quality_report": str(out_path / "rebuild_visual_quality_report.json"),
+            "rebuild_visual_critic_latest": str(out_path / f"rebuild_visual_critic_iter_{len(critic_reports) - 1}.json") if critic_reports else None,
             "asset_generation_specs": str(out_path / "asset_generation_specs.json"),
             "asset_generation_report": str(out_path / "asset_generation_report.json"),
             "asset_economy_report": str(out_path / "asset_economy_report.json"),

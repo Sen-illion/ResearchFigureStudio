@@ -656,6 +656,7 @@ def build_text_layer(
             "editable_in": "pptx",
             "layer_ownership": region.get("layer_ownership", "editable_text_layer"),
             "layer_ownership_reason": region.get("layer_ownership_reason"),
+            "z_index": int(region.get("z_index") or 80),
             "visible": True,
         }
         items.append(item)

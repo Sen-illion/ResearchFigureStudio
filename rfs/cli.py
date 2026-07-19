@@ -137,6 +137,9 @@ def build_parser() -> argparse.ArgumentParser:
     rebuild.add_argument("--layout-mode", choices=["heuristic", "vlm", "hybrid"], default="hybrid", help="Panel/card/slot layout extraction mode. Default: hybrid.")
     rebuild.add_argument("--control-mode", choices=["heuristic", "vlm", "hybrid", "manual"], default="hybrid", help="Arrow/control extraction mode. Default: hybrid.")
     rebuild.add_argument("--arrow-style-mode", choices=["off", "reference", "aesthetic"], default="reference", help="Arrow styling/routing mode for editable rebuild. Default: reference.")
+    rebuild.add_argument("--rebuild-critic-mode", choices=["off", "heuristic", "vlm"], default="off", help="Compiled-preview rebuild critic mode. Default off.")
+    rebuild.add_argument("--rebuild-critic-iterations", type=int, default=0, help="Compiled-preview critic correction iterations, clamped to 0-3. Default: 0.")
+    rebuild.add_argument("--rebuild-critic-model", help="Optional VLM model for --rebuild-critic-mode vlm. Defaults to RFS_REBUILD_CRITIC_MODEL/RFS_CRITIC_MODEL/MODEL_VLM.")
     rebuild.add_argument("--export-preview", action="store_true", help="Export a PNG preview when PowerPoint is available.")
     rebuild.add_argument("--regenerate-slots", help="Comma-separated slot ids to regenerate even when an existing asset is present.")
     rebuild.add_argument("--strict-asset-regeneration", action="store_true", help="Use stricter asset thresholds and --asset-retries for high-cost regeneration.")
@@ -187,7 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _print_human(data: dict) -> None:
     if "ok" in data:
         print(f"ok: {data['ok']}")
-    for key in ["out_dir", "approved_image", "thresholds_met", "stop_reason", "rounds_completed", "online_judge_model", "frozen_judge_model", "weak_judge_isolation", "pptx", "pdf", "png", "preview", "asset_count", "slot_count", "slot_source", "asset_mode", "asset_workers", "asset_retries", "economy_mode", "api_requests_attempted", "text_count", "connector_count", "text_mode", "layout_mode", "control_mode", "compile_only", "candidates_per_slot", "asset_review_mode", "locator_mode", "control_localizer_mode", "arrow_style_mode", "prompt_plan_mode", "prompt_plan_workers", "complexity_profile", "critic_mode", "critic_iterations", "text_extractor_mode", "ocr_engine", "ocr_lang", "text_grouping_mode", "text_grouping_effective_mode", "text_grouping_model", "text_role_mode", "text_role_effective_mode", "text_role_model", "text_intelligence_mode", "text_intelligence_effective_mode", "text_intelligence_model"]:
+    for key in ["out_dir", "approved_image", "thresholds_met", "stop_reason", "rounds_completed", "online_judge_model", "frozen_judge_model", "weak_judge_isolation", "pptx", "pdf", "png", "preview", "asset_count", "slot_count", "slot_source", "asset_mode", "asset_workers", "asset_retries", "economy_mode", "api_requests_attempted", "text_count", "connector_count", "text_mode", "layout_mode", "control_mode", "compile_only", "candidates_per_slot", "asset_review_mode", "locator_mode", "control_localizer_mode", "arrow_style_mode", "prompt_plan_mode", "prompt_plan_workers", "complexity_profile", "critic_mode", "critic_iterations", "rebuild_critic_mode", "rebuild_critic_iterations", "rebuild_critic_status", "rebuild_critic_model", "text_extractor_mode", "ocr_engine", "ocr_lang", "text_grouping_mode", "text_grouping_effective_mode", "text_grouping_model", "text_role_mode", "text_role_effective_mode", "text_role_model", "text_intelligence_mode", "text_intelligence_effective_mode", "text_intelligence_model"]:
         if key in data:
             print(f"{key}: {data[key]}")
     if data.get("presentations_qa"):
@@ -281,6 +284,9 @@ def main(argv: list[str] | None = None) -> int:
                 text_intelligence_mode=args.text_intelligence_mode,
                 text_intelligence_model=args.text_intelligence_model,
                 arrow_style_mode=args.arrow_style_mode,
+                rebuild_critic_mode=args.rebuild_critic_mode,
+                rebuild_critic_iterations=args.rebuild_critic_iterations,
+                rebuild_critic_model=args.rebuild_critic_model,
                 text_intelligence_adapter=rebuild_adapters["text_intelligence"] if args.text_intelligence_mode == "vlm" else None,
                 vlm_layout_adapter=rebuild_adapters["layout"] if args.layout_mode in {"vlm", "hybrid"} else None,
                 control_adapter=rebuild_adapters["control"] if args.control_mode in {"vlm", "hybrid"} else None,

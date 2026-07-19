@@ -199,7 +199,8 @@ def _text_program_items(program: dict) -> list[dict]:
     if not isinstance(text_program, dict):
         return []
     items = text_program.get("items", [])
-    return [item for item in items if isinstance(item, dict) and item.get("visible", True)]
+    visible = [item for item in items if isinstance(item, dict) and item.get("visible", True)]
+    return sorted(visible, key=lambda item: (float(item.get("z_index") or 80), str(item.get("id") or "")))
 
 
 def _text_item_for_target(program: dict, target_id: str, role: str) -> dict | None:
@@ -600,6 +601,7 @@ def compile_ppt(program: dict, out_dir: str | Path) -> Path:
             },
             "textbox_width_scale": TEXTBOX_WIDTH_SCALE,
             "font_size_pt": item.get("font_size_pt"),
+            "z_index": item.get("z_index"),
             "color_hex": item.get("color_hex"),
             "font_family_guess": item.get("font_family_guess"),
             "fit_strategy": item.get("fit_strategy"),
